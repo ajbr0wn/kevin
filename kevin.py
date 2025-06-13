@@ -2357,452 +2357,275 @@ class MySQLEnumerator(BaseServiceEnumerator):
 # Removed ~250 lines of duplicate subprocess/parsing code
 # Now using BaseServiceEnumerator with standardized patterns
 
-class MSSQLEnumerator:
-    """Comprehensive MSSQL enumeration using nmap scripts and manual techniques"""
+class MSSQLEnumerator(BaseServiceEnumerator):
+    """Comprehensive MSSQL enumeration using refactored base framework"""
     
     def __init__(self):
-        # MSSQL-specific nmap scripts for enumeration
-        self.mssql_scripts = [
-            'ms-sql-info',              # Basic MSSQL server information
-            'ms-sql-config',            # Configuration enumeration
-            'ms-sql-empty-password',    # Test for empty passwords
-            'ms-sql-dump-hashes',       # Enumerate password hashes (if accessible)
-            'ms-sql-hasdbaccess',       # Test database access
-            'ms-sql-query',             # Execute queries (if accessible)
-            'ms-sql-tables',            # Enumerate tables
-            'ms-sql-xp-cmdshell',       # Test xp_cmdshell access
-        ]
+        config = ServiceConfig(
+            service_name="MSSQL",
+            default_port=1433,
+            nmap_scripts=[
+                'ms-sql-info', 'ms-sql-config', 'ms-sql-empty-password',
+                'ms-sql-dump-hashes', 'ms-sql-hasdbaccess', 'ms-sql-query',
+                'ms-sql-tables', 'ms-sql-xp-cmdshell'
+            ],
+            version_patterns={
+                'version': r'Version: ([^\n]+)',
+                'server_version': r'Server Version: ([^\n]+)',
+                'instance_name': r'Instance name: ([^\n]+)',
+                'server_name': r'Server name: ([^\n]+)'
+            },
+            security_indicators=[
+                'empty password', 'xp_cmdshell', 'ole automation', 'clr enabled',
+                'sa account', 'sysadmin', 'linked servers', 'weak authentication'
+            ],
+            common_vulns=['CVE-2017-5693', 'CVE-2019-1068', 'CVE-2020-0618']
+        )
+        super().__init__(config)
         
-        # Common MSSQL security issues to check
-        self.security_checks = [
-            'empty_passwords',
-            'weak_authentication', 
-            'xp_cmdshell_enabled',
-            'ole_automation_enabled',
-            'database_access',
-            'sysadmin_privileges',
-            'linked_servers'
-        ]
-        
-        # Common MSSQL default accounts
-        self.default_accounts = [
-            'sa', 'MSSQL$', 'SQLEXPRESS', 'administrator', 'admin'
-        ]
-        
-        # Common weak passwords to suggest testing
-        self.common_passwords = [
-            '', 'sa', 'password', 'admin', 'administrator', 'root', 
-            'mssql', 'sql', '123456', 'Password123', 'sa123'
-        ]
+        # MSSQL-specific attributes
+        self.common_passwords = CommonResources.COMMON_PASSWORDS['database']
+        self.default_accounts = CommonResources.DEFAULT_ACCOUNTS['mssql']
+    
+    def _create_finding(self, target: str, port: int) -> MSSQLFinding:
+        """Create MSSQL-specific finding object"""
+        return MSSQLFinding(
+            target=target,
+            port=port,
+            timestamp=datetime.now().isoformat()
+        )
     
     def enumerate_mssql(self, target: str, port: int = 1433) -> MSSQLFinding:
-        """Comprehensive MSSQL enumeration"""
-        print(f"[*] MSSQL enumeration on {target}:{port}")
+        """Comprehensive MSSQL enumeration using base framework"""
+        return self.enumerate(target, port)
+    
+    def _phase_3_detailed_enum(self, target: str, port: int, finding: MSSQLFinding):
+        """MSSQL-specific detailed enumeration"""
+        print(f"[*] Phase 3: MSSQL-specific enumeration...")
         
-        finding = MSSQLFinding(
-            target=target,
-            port=port,
-            timestamp=datetime.now().isoformat()
-        )
-        
-        # Phase 1: Basic information gathering
-        self._get_mssql_info(target, port, finding)
-        
-        # Phase 2: Authentication and access testing
+        # Authentication testing
         self._test_mssql_authentication(target, port, finding)
         
-        # Phase 3: Database and configuration enumeration
+        # Database enumeration
         self._enumerate_mssql_databases(target, port, finding)
         
-        # Phase 4: Security assessment
-        self._assess_mssql_security(finding)
-        
-        return finding
-    
-    def _get_mssql_info(self, target: str, port: int, finding: MSSQLFinding):
-        """Get basic MSSQL server information"""
-        print(f"[*] Phase 1: MSSQL server information gathering...")
-        
-        # Run ms-sql-info script
-        try:
-            result = subprocess.run([
-                'nmap', '--script', 'ms-sql-info', 
-                '-p', str(port), target
-            ], capture_output=True, text=True, timeout=60)
-            
-            if result.returncode == 0:
-                output = result.stdout
-                
-                # Parse version information
-                version_match = re.search(r'Version: ([^\n]+)', output)
-                if version_match:
-                    finding.version = version_match.group(1).strip()
-                
-                # Parse server version
-                server_match = re.search(r'Server Version: ([^\n]+)', output)
-                if server_match:
-                    finding.server_version = server_match.group(1).strip()
-                
-                # Parse instance name
-                instance_match = re.search(r'Instance name: ([^\n]+)', output)
-                if instance_match:
-                    finding.instance_name = instance_match.group(1).strip()
-                
-                # Parse server name
-                name_match = re.search(r'Server name: ([^\n]+)', output)
-                if name_match:
-                    finding.server_name = name_match.group(1).strip()
-                
-                print(f"[+] MSSQL version: {finding.version or 'Unknown'}")
-                if finding.instance_name:
-                    print(f"[+] Instance name: {finding.instance_name}")
-                
-        except subprocess.TimeoutExpired:
-            print(f"[!] ms-sql-info script timed out")
-        except Exception as e:
-            print(f"[!] Error running ms-sql-info: {e}")
+        # Configuration checks
+        self._check_mssql_configuration(target, port, finding)
     
     def _test_mssql_authentication(self, target: str, port: int, finding: MSSQLFinding):
-        """Test MSSQL authentication methods and weak passwords"""
-        print(f"[*] Phase 2: Authentication testing...")
-        
-        # Check for empty password on sa account
-        try:
-            result = subprocess.run([
-                'nmap', '--script', 'ms-sql-empty-password', 
-                '-p', str(port), target
-            ], capture_output=True, text=True, timeout=60)
+        """Test MSSQL authentication methods"""
+        result = CommandExecutor.run_nmap_scripts(['ms-sql-empty-password'], target, port)
+        if result.success:
+            output = result.output
             
-            if result.returncode == 0:
-                output = result.stdout
-                
-                if 'sa account has empty password' in output.lower():
-                    finding.weak_passwords.append('sa:')
-                    finding.security_issues.append("SA account has empty password - critical security risk!")
-                    print(f"[!] CRITICAL: SA account has empty password!")
-                
-                # Look for other accounts with empty passwords
-                empty_accounts = re.findall(r'account (\w+) has empty password', output.lower())
-                for account in empty_accounts:
-                    if f"{account}:" not in finding.weak_passwords:
-                        finding.weak_passwords.append(f"{account}:")
-                        finding.security_issues.append(f"Account '{account}' has empty password")
-                        print(f"[!] Account '{account}' has empty password")
-                
-        except Exception as e:
-            print(f"[!] Error checking empty passwords: {e}")
+            if 'sa account has empty password' in output.lower():
+                finding.sa_account_blank_password = True
+                finding.weak_passwords['sa'] = ''
+                finding.security_issues.append("SA account has empty password - critical security risk!")
+                print(f"[!] CRITICAL: SA account has empty password!")
+            
+            # Look for other accounts with empty passwords
+            empty_accounts = re.findall(r'account (\w+) has empty password', output.lower())
+            for account in empty_accounts:
+                finding.weak_passwords[account] = ''
+                finding.security_issues.append(f"Account '{account}' has empty password")
+                print(f"[!] Account '{account}' has empty password")
     
     def _enumerate_mssql_databases(self, target: str, port: int, finding: MSSQLFinding):
-        """Enumerate MSSQL databases and configuration"""
-        print(f"[*] Phase 3: Database and configuration enumeration...")
-        
-        # Run configuration enumeration
-        try:
-            result = subprocess.run([
-                'nmap', '--script', 'ms-sql-config', 
-                '-p', str(port), target
-            ], capture_output=True, text=True, timeout=60)
+        """Enumerate MSSQL databases"""
+        result = CommandExecutor.run_nmap_scripts(['ms-sql-hasdbaccess'], target, port)
+        if result.success:
+            # Parse accessible databases
+            db_matches = re.findall(r'Database: ([^\n]+)', result.output)
+            for db in db_matches:
+                db_clean = db.strip()
+                if db_clean and db_clean not in finding.databases:
+                    finding.databases.append(db_clean)
+                    finding.accessible_databases.append(db_clean)
             
-            if result.returncode == 0:
-                output = result.stdout
-                
-                # Check for dangerous configurations
-                if 'xp_cmdshell' in output.lower() and 'enabled' in output.lower():
-                    finding.xp_cmdshell_enabled = True
-                    finding.security_issues.append("xp_cmdshell is enabled - command execution possible!")
-                    print(f"[!] xp_cmdshell is enabled!")
-                
-                if 'ole automation' in output.lower() and 'enabled' in output.lower():
-                    finding.ole_automation_enabled = True
-                    finding.security_issues.append("OLE Automation is enabled")
-                    print(f"[!] OLE Automation is enabled")
-                
-                if 'clr enabled' in output.lower():
-                    finding.clr_enabled = True
-                    finding.security_issues.append("CLR is enabled")
-                    print(f"[!] CLR is enabled")
-                
-        except Exception as e:
-            print(f"[!] Error checking MSSQL configuration: {e}")
-        
-        # Test database access if possible
-        try:
-            result = subprocess.run([
-                'nmap', '--script', 'ms-sql-hasdbaccess', 
-                '-p', str(port), target
-            ], capture_output=True, text=True, timeout=60)
-            
-            if result.returncode == 0:
-                output = result.stdout
-                
-                # Parse accessible databases
-                db_matches = re.findall(r'Database: ([^\n]+)', output)
-                for db in db_matches:
-                    db_clean = db.strip()
-                    if db_clean and db_clean not in finding.databases:
-                        finding.databases.append(db_clean)
-                        finding.accessible_databases.append(db_clean)
-                
-                if finding.databases:
-                    print(f"[+] Found {len(finding.databases)} accessible databases")
-                
-        except Exception as e:
-            print(f"[!] Error checking database access: {e}")
+            if finding.databases:
+                print(f"[+] Found {len(finding.databases)} accessible databases")
     
-    def _assess_mssql_security(self, finding: MSSQLFinding):
-        """Assess overall MSSQL security posture"""
-        print(f"[*] Phase 4: Security assessment...")
+    def _check_mssql_configuration(self, target: str, port: int, finding: MSSQLFinding):
+        """Check MSSQL configuration settings"""
+        result = CommandExecutor.run_nmap_scripts(['ms-sql-config'], target, port)
+        if result.success:
+            output = result.output
+            
+            # Check for dangerous configurations
+            if 'xp_cmdshell' in output.lower() and 'enabled' in output.lower():
+                finding.xp_cmdshell_enabled = True
+                finding.security_issues.append("xp_cmdshell is enabled - command execution possible!")
+                print(f"[!] xp_cmdshell is enabled!")
+            
+            if 'ole automation' in output.lower() and 'enabled' in output.lower():
+                finding.ole_automation_enabled = True
+                finding.security_issues.append("OLE Automation is enabled")
+                print(f"[!] OLE Automation is enabled")
+            
+            if 'clr enabled' in output.lower():
+                finding.clr_enabled = True
+                finding.security_issues.append("CLR is enabled")
+                print(f"[!] CLR is enabled")
+    
+    def _check_service_specific_issues(self, finding: MSSQLFinding) -> List[str]:
+        """MSSQL-specific security issue checks"""
+        issues = []
         
-        # Analyze version for known vulnerabilities
+        # Critical configuration issues
+        if finding.xp_cmdshell_enabled:
+            issues.append("CRITICAL: xp_cmdshell enabled - command execution possible!")
+        
+        if finding.sa_account_blank_password:
+            issues.append("CRITICAL: SA account has blank password!")
+        
+        # Version-specific issues
         if finding.version:
             version_lower = finding.version.lower()
-            
-            # Check for very old versions
             if any(old_ver in version_lower for old_ver in ['2000', '2005', '2008']):
-                finding.security_issues.append(f"Very old MSSQL version detected: {finding.version}")
-                print(f"[!] Very old MSSQL version: {finding.version}")
-            
-            # Check for versions with known issues
-            if '2012' in version_lower:
-                finding.security_issues.append("MSSQL 2012 has known security issues - check for patches")
-            elif '2014' in version_lower:
-                finding.security_issues.append("MSSQL 2014 has some known security issues - verify patch level")
+                issues.append(f"Very old MSSQL version detected: {finding.version}")
         
-        # Authentication mode assessment
+        # Authentication issues
         if finding.weak_passwords:
-            finding.security_issues.append("Weak or empty passwords detected - immediate security risk")
+            issues.append("Weak or empty passwords detected - immediate security risk")
         
-        # Overall security assessment
-        critical_issues = len([issue for issue in finding.security_issues 
-                             if any(keyword in issue.lower() for keyword in ['critical', 'empty password', 'sa', 'xp_cmdshell'])])
-        
-        print(f"[*] Security assessment complete:")
-        print(f"    Total issues found: {len(finding.security_issues)}")
-        print(f"    Critical issues: {critical_issues}")
-        
-        if critical_issues > 0:
-            print(f"[!] CRITICAL security issues detected - immediate attention required!")
+        return issues
 
-class OracleEnumerator:
-    """Comprehensive Oracle enumeration using nmap scripts and tnscmd10g"""
+class OracleEnumerator(BaseServiceEnumerator):
+    """Comprehensive Oracle enumeration using refactored base framework"""
     
     def __init__(self):
-        # Oracle-specific nmap scripts
-        self.oracle_scripts = [
-            'oracle-enum-users',        # Enumerate Oracle users
-            'oracle-sid-brute',         # Brute force Oracle SIDs
-            'oracle-tns-version',       # TNS listener version
-        ]
+        config = ServiceConfig(
+            service_name="Oracle",
+            default_port=1521,
+            nmap_scripts=[
+                'oracle-enum-users', 'oracle-sid-brute', 'oracle-tns-version'
+            ],
+            version_patterns={
+                'listener_version': r'Version ([^\n]+)',
+                'version': r'Oracle Database ([^\n]+)',
+                'banner': r'BANNER\n([^\n]+)'
+            },
+            security_indicators=[
+                'accessible sid', 'weak password', 'default account',
+                'anonymous access', 'old version', 'common sid'
+            ],
+            common_vulns=['CVE-2012-3137', 'CVE-2013-3774', 'CVE-2014-4237']
+        )
+        super().__init__(config)
         
-        # Common Oracle SIDs to test
+        # Oracle-specific attributes
+        self.common_passwords = CommonResources.COMMON_PASSWORDS['database']
+        self.default_accounts = CommonResources.DEFAULT_ACCOUNTS['oracle']
         self.common_sids = [
             'XE', 'ORCL', 'TEST', 'PROD', 'DEV', 'ORACLE', 'DB',
-            'SID', 'DEMO', 'SAMPLE', 'SCOTT', 'HR', 'OE', 'PM',
-            'SH', 'BI', 'IX', 'APEX', 'XEXDB', 'PLSExtProc'
-        ]
-        
-        # Common Oracle default accounts
-        self.default_accounts = [
-            'SYS', 'SYSTEM', 'SCOTT', 'HR', 'OE', 'PM', 'SH',
-            'DBSNMP', 'SYSMAN', 'MGMT_VIEW', 'FLOWS_FILES',
-            'APEX_PUBLIC_USER', 'ANONYMOUS'
-        ]
-        
-        # Common Oracle weak passwords
-        self.common_passwords = [
-            'oracle', 'password', 'admin', 'system', 'manager',
-            'scott', 'tiger', 'hr', 'change_on_install', 'welcome1'
+            'SID', 'DEMO', 'SAMPLE', 'SCOTT', 'HR', 'OE', 'PM'
         ]
     
-    def enumerate_oracle(self, target: str, port: int = 1521) -> OracleFinding:
-        """Comprehensive Oracle enumeration"""
-        print(f"[*] Oracle enumeration on {target}:{port}")
-        
-        finding = OracleFinding(
+    def _create_finding(self, target: str, port: int) -> OracleFinding:
+        """Create Oracle-specific finding object"""
+        return OracleFinding(
             target=target,
             port=port,
             timestamp=datetime.now().isoformat()
         )
+    
+    def enumerate_oracle(self, target: str, port: int = 1521) -> OracleFinding:
+        """Comprehensive Oracle enumeration using base framework"""
+        return self.enumerate(target, port)
+    
+    def _phase_3_detailed_enum(self, target: str, port: int, finding: OracleFinding):
+        """Oracle-specific detailed enumeration"""
+        print(f"[*] Phase 3: Oracle-specific enumeration...")
         
-        # Phase 1: TNS Listener information
-        self._get_oracle_listener_info(target, port, finding)
+        # TNS Listener enumeration
+        self._enumerate_tns_listener(target, port, finding)
         
-        # Phase 2: SID enumeration
+        # SID enumeration and testing
         self._enumerate_oracle_sids(target, port, finding)
         
-        # Phase 3: Version and banner information
+        # Version information gathering
         self._get_oracle_version_info(target, port, finding)
-        
-        # Phase 4: Security assessment
-        self._assess_oracle_security(finding)
-        
-        return finding
     
-    def _get_oracle_listener_info(self, target: str, port: int, finding: OracleFinding):
-        """Get Oracle TNS Listener information"""
-        print(f"[*] Phase 1: Oracle TNS Listener enumeration...")
-        
-        # Try tnscmd10g if available
-        try:
-            result = subprocess.run([
-                'tnscmd10g', 'version', '-h', target, '-p', str(port)
-            ], capture_output=True, text=True, timeout=30)
+    def _enumerate_tns_listener(self, target: str, port: int, finding: OracleFinding):
+        """Enumerate TNS Listener information"""
+        # Try tnscmd10g first
+        tnscmd_result = CommandExecutor.run_command(['tnscmd10g', 'version', '-h', target, '-p', str(port)], timeout=30)
+        if tnscmd_result.success:
+            version_info = CommandExecutor.parse_version_info(tnscmd_result.output, self.version_patterns)
+            if 'listener_version' in version_info:
+                finding.listener_version = version_info['listener_version']
+                print(f"[+] TNS Listener version: {finding.listener_version}")
             
-            if result.returncode == 0:
-                output = result.stdout
-                
-                # Parse listener version
-                version_match = re.search(r'Version ([^\n]+)', output)
-                if version_match:
-                    finding.listener_version = version_match.group(1).strip()
-                    print(f"[+] TNS Listener version: {finding.listener_version}")
-                
-                # Get listener status
-                status_result = subprocess.run([
-                    'tnscmd10g', 'status', '-h', target, '-p', str(port)
-                ], capture_output=True, text=True, timeout=30)
-                
-                if status_result.returncode == 0:
-                    finding.listener_status = "Active"
-                    print(f"[+] TNS Listener is active")
-                
-        except FileNotFoundError:
-            print(f"[!] tnscmd10g not found - trying nmap scripts")
-        except Exception as e:
-            print(f"[!] Error running tnscmd10g: {e}")
-        
-        # Fallback to nmap scripts
-        try:
-            result = subprocess.run([
-                'nmap', '--script', 'oracle-tns-version', 
-                '-p', str(port), target
-            ], capture_output=True, text=True, timeout=60)
-            
-            if result.returncode == 0:
-                output = result.stdout
-                
-                # Parse TNS version from nmap output
-                if 'Version:' in output:
-                    version_match = re.search(r'Version: ([^\n]+)', output)
-                    if version_match and not finding.listener_version:
-                        finding.listener_version = version_match.group(1).strip()
-                        print(f"[+] TNS Listener version: {finding.listener_version}")
-                
-        except Exception as e:
-            print(f"[!] Error running oracle-tns-version: {e}")
+            # Get status
+            status_result = CommandExecutor.run_command(['tnscmd10g', 'status', '-h', target, '-p', str(port)], timeout=30)
+            if status_result.success:
+                finding.listener_status = "Active"
+                print(f"[+] TNS Listener is active")
+        else:
+            # Fallback to nmap
+            result = CommandExecutor.run_nmap_scripts(['oracle-tns-version'], target, port)
+            if result.success:
+                version_info = CommandExecutor.parse_version_info(result.output, self.version_patterns)
+                if 'listener_version' in version_info and not finding.listener_version:
+                    finding.listener_version = version_info['listener_version']
     
     def _enumerate_oracle_sids(self, target: str, port: int, finding: OracleFinding):
         """Enumerate Oracle SIDs"""
-        print(f"[*] Phase 2: Oracle SID enumeration...")
-        
-        # Try nmap SID brute force
-        try:
-            result = subprocess.run([
-                'nmap', '--script', 'oracle-sid-brute', 
-                '-p', str(port), target
-            ], capture_output=True, text=True, timeout=120)
+        # Use nmap SID brute force
+        result = CommandExecutor.run_nmap_scripts(['oracle-sid-brute'], target, port, timeout=120)
+        if result.success:
+            sid_matches = re.findall(r'SID: ([^\n\s]+)', result.output)
+            for sid in sid_matches:
+                sid_clean = sid.strip()
+                if sid_clean and sid_clean not in finding.sids:
+                    finding.sids.append(sid_clean)
             
-            if result.returncode == 0:
-                output = result.stdout
-                
-                # Parse discovered SIDs
-                sid_matches = re.findall(r'SID: ([^\n\s]+)', output)
-                for sid in sid_matches:
-                    sid_clean = sid.strip()
-                    if sid_clean and sid_clean not in finding.sids:
-                        finding.sids.append(sid_clean)
-                
-                if finding.sids:
-                    print(f"[+] Found {len(finding.sids)} Oracle SIDs: {', '.join(finding.sids)}")
-                
-        except Exception as e:
-            print(f"[!] Error running oracle-sid-brute: {e}")
+            if finding.sids:
+                print(f"[+] Found {len(finding.sids)} Oracle SIDs")
         
-        # Manual SID testing with tnscmd10g
-        if finding.sids:  # Only test discovered SIDs
-            sids_to_test = finding.sids
-        else:
-            sids_to_test = self.common_sids[:10]  # Test common SIDs if none discovered
-            print(f"[*] Testing common SIDs: {', '.join(sids_to_test)}")
-        
+        # Test SID accessibility with tnscmd10g
+        sids_to_test = finding.sids if finding.sids else self.common_sids[:10]
         for sid in sids_to_test:
-            try:
-                result = subprocess.run([
-                    'tnscmd10g', 'ping', '-h', target, '-p', str(port), '-s', sid
-                ], capture_output=True, text=True, timeout=10)
-                
-                if result.returncode == 0 and 'OK' in result.stdout:
-                    if sid not in finding.sids:
-                        finding.sids.append(sid)
-                    finding.accessible_sids.append(sid)
-                    print(f"[+] SID '{sid}' is accessible")
-                
-            except FileNotFoundError:
-                break  # tnscmd10g not available
-            except Exception:
-                continue
+            sid_result = CommandExecutor.run_command(['tnscmd10g', 'ping', '-h', target, '-p', str(port), '-s', sid], timeout=10)
+            if sid_result.success and 'OK' in sid_result.output:
+                if sid not in finding.sids:
+                    finding.sids.append(sid)
+                finding.accessible_sids.append(sid)
+                print(f"[+] SID '{sid}' is accessible")
     
     def _get_oracle_version_info(self, target: str, port: int, finding: OracleFinding):
-        """Get Oracle version and banner information"""
-        print(f"[*] Phase 3: Oracle version enumeration...")
-        
-        # Try to get version information for each accessible SID
+        """Get Oracle version information"""
         for sid in finding.accessible_sids:
-            try:
-                # Use tnscmd10g to get version
-                result = subprocess.run([
-                    'tnscmd10g', 'version', '-h', target, '-p', str(port), '-s', sid
-                ], capture_output=True, text=True, timeout=30)
-                
-                if result.returncode == 0:
-                    output = result.stdout
-                    
-                    # Parse Oracle version
-                    version_match = re.search(r'Oracle Database ([^\n]+)', output)
-                    if version_match and not finding.version:
-                        finding.version = version_match.group(1).strip()
-                        print(f"[+] Oracle version: {finding.version}")
-                    
-                    # Parse banner
-                    banner_match = re.search(r'BANNER\n([^\n]+)', output)
-                    if banner_match and not finding.banner:
-                        finding.banner = banner_match.group(1).strip()
-                        print(f"[+] Oracle banner: {finding.banner}")
-                
-            except FileNotFoundError:
-                break  # tnscmd10g not available
-            except Exception:
-                continue
+            result = CommandExecutor.run_command(['tnscmd10g', 'version', '-h', target, '-p', str(port), '-s', sid], timeout=30)
+            if result.success:
+                version_info = CommandExecutor.parse_version_info(result.output, self.version_patterns)
+                if 'version' in version_info and not finding.version:
+                    finding.version = version_info['version']
+                    print(f"[+] Oracle version: {finding.version}")
+                if 'banner' in version_info and not finding.banner:
+                    finding.banner = version_info['banner']
     
-    def _assess_oracle_security(self, finding: OracleFinding):
-        """Assess Oracle security posture"""
-        print(f"[*] Phase 4: Security assessment...")
+    def _check_service_specific_issues(self, finding: OracleFinding) -> List[str]:
+        """Oracle-specific security issue checks"""
+        issues = []
         
-        # Check for accessible SIDs
+        # Check accessible SIDs
         if finding.accessible_sids:
-            finding.security_issues.append(f"Found {len(finding.accessible_sids)} accessible Oracle SIDs")
-            print(f"[+] {len(finding.accessible_sids)} accessible SIDs found")
+            issues.append(f"Found {len(finding.accessible_sids)} accessible Oracle SIDs")
         
-        # Version-based assessment
+        # Version-specific issues
         if finding.version:
             version_lower = finding.version.lower()
-            
-            # Check for very old versions
             if any(old_ver in version_lower for old_ver in ['9i', '10g', '11g r1']):
-                finding.security_issues.append(f"Old Oracle version detected: {finding.version}")
-                print(f"[!] Old Oracle version: {finding.version}")
+                issues.append(f"Old Oracle version detected: {finding.version}")
         
-        # Check for common SIDs
+        # Common SID issues
         common_found = [sid for sid in finding.sids if sid.upper() in ['XE', 'ORCL', 'TEST', 'DEV']]
         if common_found:
-            finding.security_issues.append(f"Common Oracle SIDs found: {', '.join(common_found)}")
-            print(f"[!] Common SIDs detected: {', '.join(common_found)}")
+            issues.append(f"Common Oracle SIDs found: {', '.join(common_found)}")
         
-        # Overall assessment
-        print(f"[*] Security assessment complete:")
-        print(f"    Total SIDs found: {len(finding.sids)}")
-        print(f"    Accessible SIDs: {len(finding.accessible_sids)}")
-        print(f"    Security issues: {len(finding.security_issues)}")
+        return issues
 
 class SMTPEnumerator:
     """SMTP service enumeration using nmap scripts and manual techniques"""
@@ -3196,13 +3019,125 @@ class EmailServiceEnumerator:
         print(f"    Security issues: {len(finding.security_issues)}")
         print(f"    Weak configurations: {len(finding.weak_configurations)}")
 
-class LDAPEnumerator:
-    """LDAP service enumeration using ldapsearch and nmap scripts"""
+class LDAPEnumerator(BaseServiceEnumerator):
+    """LDAP service enumeration using refactored base framework"""
+    
+    def __init__(self):
+        config = ServiceConfig(
+            service_name="LDAP",
+            default_port=389,
+            nmap_scripts=[
+                'ldap-rootdse', 'ldap-search', 'ldap-brute'
+            ],
+            version_patterns={
+                'server_info': r'Server: ([^\n]+)',
+                'base_dn': r'namingContexts: ([^\n]+)'
+            },
+            security_indicators=[
+                'anonymous bind', 'weak authentication', 'null base',
+                'directory accessible', 'schema accessible'
+            ],
+            common_vulns=['CVE-2018-8187', 'CVE-2019-1040', 'CVE-2020-1472']
+        )
+        super().__init__(config)
+        
+        # LDAP-specific attributes
+        self.common_passwords = CommonResources.COMMON_PASSWORDS['ldap']
+        self.default_accounts = CommonResources.DEFAULT_ACCOUNTS['ldap']
+    
+    def _create_finding(self, target: str, port: int) -> LDAPFinding:
+        """Create LDAP-specific finding object"""
+        return LDAPFinding(target=target, port=port)
     
     def enumerate_ldap(self, target: str, port: int = 389) -> LDAPFinding:
-        """Comprehensive LDAP enumeration"""
-        print(f"[*] Starting LDAP enumeration on {target}:{port}")
+        """Comprehensive LDAP enumeration using base framework"""
+        return self.enumerate(target, port)
+    
+    def _phase_3_detailed_enum(self, target: str, port: int, finding: LDAPFinding):
+        """LDAP-specific detailed enumeration"""
+        print(f"[*] Phase 3: LDAP-specific enumeration...")
         
+        # Root DSE discovery
+        self._discover_root_dse(target, port, finding)
+        
+        # Directory enumeration
+        self._enumerate_directory_structure(target, port, finding)
+        
+        # User and group enumeration
+        self._enumerate_users_and_groups(target, port, finding)
+    
+    def _discover_root_dse(self, target: str, port: int, finding: LDAPFinding):
+        """Discover LDAP root DSE"""
+        result = CommandExecutor.run_command(['ldapsearch', '-x', '-h', target, '-p', str(port), '-s', 'base'], timeout=30)
+        if result.success:
+            # Parse naming contexts
+            naming_contexts = re.findall(r'namingContexts: ([^\n]+)', result.output)
+            finding.naming_contexts.extend(naming_contexts)
+            if naming_contexts:
+                print(f"[+] Found {len(naming_contexts)} naming contexts")
+        
+        # Test anonymous bind
+        anon_result = CommandExecutor.run_command(['ldapsearch', '-x', '-h', target, '-p', str(port), '-b', '', '-s', 'base'], timeout=30)
+        if anon_result.success and 'result: 0 Success' in anon_result.output:
+            finding.anonymous_bind = True
+            finding.security_issues.append("Anonymous bind enabled - critical information disclosure")
+            print(f"[!] Anonymous bind enabled!")
+    
+    def _enumerate_directory_structure(self, target: str, port: int, finding: LDAPFinding):
+        """Enumerate LDAP directory structure"""
+        if finding.naming_contexts:
+            for context in finding.naming_contexts[:3]:  # Limit to first 3 contexts
+                result = CommandExecutor.run_command(['ldapsearch', '-x', '-h', target, '-p', str(port), '-b', context, '-s', 'one'], timeout=60)
+                if result.success:
+                    ous = re.findall(r'dn: ([^,\n]+)', result.output)
+                    finding.organizational_units.extend(ous)
+    
+    def _enumerate_users_and_groups(self, target: str, port: int, finding: LDAPFinding):
+        """Enumerate users and groups"""
+        if finding.naming_contexts:
+            for context in finding.naming_contexts[:2]:  # Limit enumeration
+                # User enumeration
+                user_result = CommandExecutor.run_command(['ldapsearch', '-x', '-h', target, '-p', str(port), '-b', context, '(objectClass=person)'], timeout=60)
+                if user_result.success:
+                    users = re.findall(r'cn: ([^\n]+)', user_result.output)
+                    finding.users_found.extend(users[:50])  # Limit results
+                
+                # Group enumeration  
+                group_result = CommandExecutor.run_command(['ldapsearch', '-x', '-h', target, '-p', str(port), '-b', context, '(objectClass=group)'], timeout=60)
+                if group_result.success:
+                    groups = re.findall(r'cn: ([^\n]+)', group_result.output)
+                    finding.groups_found.extend(groups[:50])  # Limit results
+    
+    def _check_service_specific_issues(self, finding: LDAPFinding) -> List[str]:
+        """LDAP-specific security issue checks"""
+        issues = []
+        
+        if finding.anonymous_bind:
+            issues.append("CRITICAL: Anonymous bind enabled!")
+        
+        if finding.users_found:
+            issues.append(f"Directory enumeration successful - {len(finding.users_found)} users found")
+        
+        if finding.groups_found:
+            issues.append(f"Group enumeration successful - {len(finding.groups_found)} groups found")
+        
+        return issues
+    
+    # Legacy method stubs to maintain compatibility
+    def _enumerate_naming_contexts(self, target: str, port: int, finding: LDAPFinding):
+        """Legacy compatibility - basic implementation"""
+        pass
+    
+    def _discover_schema(self, target: str, port: int, finding: LDAPFinding):
+        """Legacy compatibility - basic implementation"""  
+        pass
+    
+    def _assess_security(self, target: str, port: int, finding: LDAPFinding):
+        """Legacy compatibility - basic implementation"""
+        pass
+    
+    def _old_enumerate_ldap(self, target: str, port: int = 389) -> LDAPFinding:
+        """Original comprehensive LDAP enumeration - kept for reference"""
         finding = LDAPFinding(target=target, port=port)
         
         # Phase 1: Basic LDAP discovery
@@ -3475,10 +3410,97 @@ class LDAPEnumerator:
         print(f"    StartTLS: {finding.start_tls_available}")
         print(f"    Security issues: {len(finding.security_issues)}")
 
-class KerberosEnumerator:
-    """Kerberos service enumeration using nmap scripts and kerbrute"""
+class KerberosEnumerator(BaseServiceEnumerator):
+    """Kerberos service enumeration using refactored base framework"""
+    
+    def __init__(self):
+        config = ServiceConfig(
+            service_name="Kerberos",
+            default_port=88,
+            nmap_scripts=[
+                'krb5-enum-users', 'ms-sql-info'
+            ],
+            version_patterns={
+                'realm': r'Kerberos realm: ([^\n]+)',
+                'kdc_server': r'KDC server: ([^\n]+)'
+            },
+            security_indicators=[
+                'pre-authentication disabled', 'spn found', 'roastable',
+                'weak encryption', 'domain controller'
+            ],
+            common_vulns=['CVE-2014-6324', 'CVE-2017-8495', 'CVE-2020-1472']
+        )
+        super().__init__(config)
+        
+        # Kerberos-specific attributes
+        self.common_passwords = CommonResources.COMMON_PASSWORDS['kerberos']
+        self.default_accounts = CommonResources.DEFAULT_ACCOUNTS['kerberos']
+    
+    def _create_finding(self, target: str, port: int) -> KerberosFinding:
+        """Create Kerberos-specific finding object"""
+        return KerberosFinding(target=target, port=port, timestamp=datetime.now().isoformat())
     
     def enumerate_kerberos(self, target: str, port: int = 88) -> KerberosFinding:
+        """Comprehensive Kerberos enumeration using base framework"""
+        return self.enumerate(target, port)
+    
+    def _phase_3_detailed_enum(self, target: str, port: int, finding: KerberosFinding):
+        """Kerberos-specific detailed enumeration"""
+        print(f"[*] Phase 3: Kerberos-specific enumeration...")
+        
+        # Realm discovery
+        self._discover_realm(target, port, finding)
+        
+        # User enumeration
+        self._enumerate_kerberos_users(target, port, finding)
+        
+        # SPN enumeration
+        self._enumerate_spns(target, port, finding)
+    
+    def _discover_realm(self, target: str, port: int, finding: KerberosFinding):
+        """Discover Kerberos realm"""
+        # Try to get realm information
+        result = CommandExecutor.run_command(['nmap', '--script', 'krb5-enum-users', '-p', str(port), target], timeout=60)
+        if result.success:
+            realm_match = re.search(r'Realm: ([^\n]+)', result.output)
+            if realm_match:
+                finding.realm = realm_match.group(1).strip()
+                print(f"[+] Kerberos realm: {finding.realm}")
+    
+    def _enumerate_kerberos_users(self, target: str, port: int, finding: KerberosFinding):
+        """Enumerate Kerberos users"""
+        # Basic user enumeration using nmap
+        result = CommandExecutor.run_command(['nmap', '--script', 'krb5-enum-users', '-p', str(port), target], timeout=120)
+        if result.success:
+            users = re.findall(r'Valid user: ([^\n\s]+)', result.output)
+            finding.users_found.extend(users[:20])  # Limit results
+            if users:
+                print(f"[+] Found {len(users)} Kerberos users")
+    
+    def _enumerate_spns(self, target: str, port: int, finding: KerberosFinding):
+        """Enumerate Service Principal Names"""
+        # Try to find SPNs
+        if finding.realm:
+            print(f"[*] Attempting SPN enumeration for realm {finding.realm}")
+            # Placeholder for SPN enumeration logic
+            # In practice, this would use tools like GetUserSPNs.py
+    
+    def _check_service_specific_issues(self, finding: KerberosFinding) -> List[str]:
+        """Kerberos-specific security issue checks"""
+        issues = []
+        
+        if finding.asrep_roastable_users:
+            issues.append(f"CRITICAL: {len(finding.asrep_roastable_users)} users vulnerable to AS-REP roasting!")
+        
+        if finding.kerberoastable_users:
+            issues.append(f"CRITICAL: {len(finding.kerberoastable_users)} users vulnerable to Kerberoasting!")
+        
+        if finding.users_found:
+            issues.append(f"User enumeration successful - {len(finding.users_found)} users found")
+        
+        return issues
+    
+    def _old_enumerate_kerberos(self, target: str, port: int = 88) -> KerberosFinding:
         """Comprehensive Kerberos enumeration"""
         print(f"[*] Starting Kerberos enumeration on {target}:{port}")
         
