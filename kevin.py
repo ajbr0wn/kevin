@@ -19,7 +19,7 @@ import re
 import urllib.parse
 from datetime import datetime
 from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Set, Tuple, Callable, Any
+from typing import Dict, List, Optional, Set, Tuple, Any, Callable
 from pathlib import Path
 from abc import ABC, abstractmethod
 
@@ -239,6 +239,363 @@ class BaseServiceEnumerator(ABC):
 
 # ===============================
 # END FRAMEWORK CLASSES  
+# ===============================
+
+# ===============================
+# UNIVERSAL DISPLAY SYSTEM
+# ===============================
+
+@dataclass
+class DisplayConfig:
+    """Configuration for service-specific display formatting"""
+    emoji: str
+    service_name: str
+    critical_keywords: List[str]
+    section_definitions: Dict[str, dict]
+    attack_suggestion_config: Dict[str, Any]
+    pro_tips: List[str]
+
+class DisplaySection:
+    """Base class for display sections"""
+    
+    def __init__(self, title: str, emoji: str, field_mappings: Dict[str, str]):
+        self.title = title
+        self.emoji = emoji
+        self.field_mappings = field_mappings
+    
+    def display(self, finding: Any, config: DisplayConfig) -> bool:
+        """Display this section if data is available. Returns True if displayed."""
+        if not self._has_data(finding):
+            return False
+        
+        print(f"\n{self.emoji} {self.title}:")
+        self._render_content(finding, config)
+        return True
+    
+    def _has_data(self, finding: Any) -> bool:
+        """Check if finding has data for this section"""
+        for field_name in self.field_mappings.keys():
+            if hasattr(finding, field_name):
+                value = getattr(finding, field_name)
+                if value and (not isinstance(value, list) or len(value) > 0):
+                    return True
+        return False
+    
+    def _render_content(self, finding: Any, config: DisplayConfig):
+        """Render the content of this section"""
+        for field_name, display_name in self.field_mappings.items():
+            if hasattr(finding, field_name):
+                value = getattr(finding, field_name)
+                if value:
+                    self._render_field(display_name, value, finding, config)
+    
+    def _render_field(self, display_name: str, value: Any, finding: Any, config: DisplayConfig):
+        """Render a specific field"""
+        if isinstance(value, list):
+            self._render_list_field(display_name, value)
+        elif isinstance(value, bool):
+            self._render_boolean_field(display_name, value)
+        else:
+            print(f"   {display_name}: {value}")
+    
+    def _render_list_field(self, display_name: str, items: List[str], max_items: int = 10):
+        """Render a list field with truncation"""
+        if not items:
+            return
+        
+        if len(items) == 1:
+            print(f"   {display_name}: {items[0]}")
+        else:
+            print(f"   {display_name} ({len(items)}):")
+            for item in items[:max_items]:
+                print(f"     • {item}")
+            if len(items) > max_items:
+                print(f"     ... and {len(items) - max_items} more")
+    
+    def _render_boolean_field(self, display_name: str, value: bool):
+        """Render a boolean field with status indicators"""
+        status = "✅ Enabled" if value else "❌ Disabled"
+        print(f"   {display_name}: {status}")
+
+class SecurityIssuesSection(DisplaySection):
+    """Specialized section for security issues with severity classification"""
+    
+    def __init__(self):
+        super().__init__("SECURITY ISSUES", "🚨", {"security_issues": "Security Issues"})
+    
+    def _render_content(self, finding: Any, config: DisplayConfig):
+        if hasattr(finding, 'security_issues') and finding.security_issues:
+            print(f"\n🚨 SECURITY ISSUES ({len(finding.security_issues)}):")
+            for i, issue in enumerate(finding.security_issues, 1):
+                severity = self._classify_severity(issue, config.critical_keywords)
+                print(f"   {i}. {severity}: {issue}")
+    
+    def _classify_severity(self, issue: str, critical_keywords: List[str]) -> str:
+        """Classify security issue severity based on keywords"""
+        issue_lower = issue.lower()
+        if any(keyword in issue_lower for keyword in critical_keywords):
+            return "🔥 CRITICAL"
+        elif any(keyword in issue_lower for keyword in ['high', 'important', 'severe']):
+            return "🔥 HIGH RISK"
+        else:
+            return "⚠️  WARNING"
+
+class UniversalDisplayManager:
+    """Universal display system for all service findings"""
+    
+    def __init__(self):
+        self.service_configs = self._initialize_service_configs()
+    
+    def display_findings(self, service_type: str, finding: Any):
+        """Universal display method for all service findings"""
+        if service_type not in self.service_configs:
+            self._fallback_display(service_type, finding)
+            return
+        
+        config = self.service_configs[service_type]
+        
+        # 1. Display header
+        self._display_header(config, finding)
+        
+        # 2. Display basic information
+        self._display_basic_info(finding, config)
+        
+        # 3. Display security issues (always check for this)
+        self._display_security_issues(finding, config)
+        
+        # 4. Display service-specific sections
+        self._display_custom_sections(finding, config)
+        
+        # 5. Display attack recommendations
+        self._display_attack_recommendations(finding, config)
+        
+        # 6. Display pro tips
+        self._display_pro_tips(config)
+    
+    def _initialize_service_configs(self) -> Dict[str, DisplayConfig]:
+        """Initialize display configurations for all services"""
+        return {
+            'mysql': DisplayConfig(
+                emoji='🗃️',
+                service_name='MySQL',
+                critical_keywords=['critical', 'root', 'empty password', 'blank password'],
+                section_definitions={
+                    'databases': {'title': 'ACCESSIBLE DATABASES', 'emoji': '📂', 'fields': ['databases', 'accessible_databases']},
+                    'users': {'title': 'MYSQL USERS', 'emoji': '👤', 'fields': ['users']},
+                    'variables': {'title': 'MYSQL VARIABLES', 'emoji': '🔧', 'fields': ['variables']},
+                },
+                attack_suggestion_config={
+                    'critical_checks': ['empty_password_accounts', 'root_access'],
+                    'command_templates': [
+                        "mysql -h {target} -u root",
+                        "mysql -h {target} -u {user} -p"
+                    ]
+                },
+                pro_tips=[
+                    "Empty passwords are critical - test immediately",
+                    "Check information_schema for database structure",
+                    "Use 'show mysql' to see all enumeration details"
+                ]
+            ),
+            'mssql': DisplayConfig(
+                emoji='🏢',
+                service_name='MSSQL',
+                critical_keywords=['critical', 'high', 'cmdshell', 'blank', 'sa account'],
+                section_definitions={
+                    'databases': {'title': 'MSSQL DATABASES', 'emoji': '📊', 'fields': ['databases']},
+                    'configurations': {'title': 'SERVER CONFIGURATION', 'emoji': '🔧', 'fields': ['server_configuration']},
+                },
+                attack_suggestion_config={
+                    'critical_checks': ['xp_cmdshell_enabled', 'sa_account_blank_password'],
+                    'command_templates': [
+                        "osql -S {target} -U sa -P \"\"",
+                        "sqlcmd -S {target} -U sa -P \"\""
+                    ]
+                },
+                pro_tips=[
+                    "xp_cmdshell enables command execution",
+                    "SA account with blank password = critical finding",
+                    "Use 'show mssql' to see all enumeration details"
+                ]
+            ),
+            'oracle': DisplayConfig(
+                emoji='🔮',
+                service_name='Oracle',
+                critical_keywords=['critical', 'high', 'default', 'weak', 'sys', 'system'],
+                section_definitions={
+                    'sids': {'title': 'SERVICE IDENTIFIERS (SIDs)', 'emoji': '🎯', 'fields': ['sids', 'accessible_sids']},
+                    'accounts': {'title': 'DEFAULT ACCOUNTS', 'emoji': '🔓', 'fields': ['default_accounts']},
+                },
+                attack_suggestion_config={
+                    'critical_checks': ['default_accounts', 'accessible_sids'],
+                    'command_templates': [
+                        "sqlplus system/manager@{target}:1521/{sid}",
+                        "sqlplus scott/tiger@{target}:1521/{sid}"
+                    ]
+                },
+                pro_tips=[
+                    "Default Oracle accounts are often unchanged",
+                    "SID enumeration reveals database instances",
+                    "Use 'show oracle' to see all enumeration details"
+                ]
+            ),
+            'smtp': DisplayConfig(
+                emoji='📧',
+                service_name='SMTP',
+                critical_keywords=['critical', 'open relay', 'relay'],
+                section_definitions={
+                    'users': {'title': 'VALID USERS', 'emoji': '👤', 'fields': ['valid_users']},
+                    'capabilities': {'title': 'SMTP CAPABILITIES', 'emoji': '⚙️', 'fields': ['capabilities']},
+                },
+                attack_suggestion_config={
+                    'critical_checks': ['relay_test_result', 'vrfy_enabled', 'expn_enabled'],
+                    'command_templates': [
+                        "smtp-user-enum -M VRFY -U users.txt -t {target}",
+                        "telnet {target} 25"
+                    ]
+                },
+                pro_tips=[
+                    "Open relay allows mail spoofing",
+                    "VRFY/EXPN enable user enumeration",
+                    "Use 'show smtp' to see all enumeration details"
+                ]
+            ),
+            'ldap': DisplayConfig(
+                emoji='🏢',
+                service_name='LDAP',
+                critical_keywords=['critical', 'anonymous', 'bind'],
+                section_definitions={
+                    'users': {'title': 'USERS FOUND', 'emoji': '👥', 'fields': ['users_found']},
+                    'groups': {'title': 'GROUPS FOUND', 'emoji': '👤', 'fields': ['groups_found']},
+                    'computers': {'title': 'COMPUTER ACCOUNTS', 'emoji': '💻', 'fields': ['computer_accounts']},
+                },
+                attack_suggestion_config={
+                    'critical_checks': ['anonymous_bind'],
+                    'command_templates': [
+                        "ldapsearch -x -h {target} -s base",
+                        "ldapsearch -x -h {target} -b \"dc=domain,dc=com\""
+                    ]
+                },
+                pro_tips=[
+                    "Anonymous bind = critical directory access",
+                    "User enumeration enables password attacks",
+                    "Use 'show ldap' to see all enumeration details"
+                ]
+            ),
+            'kerberos': DisplayConfig(
+                emoji='🎫',
+                service_name='Kerberos',
+                critical_keywords=['critical', 'roast', 'asrep', 'kerberoast'],
+                section_definitions={
+                    'users': {'title': 'USER ENUMERATION', 'emoji': '👥', 'fields': ['users_found']},
+                    'spns': {'title': 'SERVICE PRINCIPAL NAMES', 'emoji': '🎯', 'fields': ['spns_found']},
+                    'roastable': {'title': 'ROASTABLE USERS', 'emoji': '🔥', 'fields': ['asrep_roastable_users', 'kerberoastable_users']},
+                },
+                attack_suggestion_config={
+                    'critical_checks': ['asrep_roastable_users', 'kerberoastable_users'],
+                    'command_templates': [
+                        "GetNPUsers.py domain/ -usersfile users.txt",
+                        "GetUserSPNs.py domain/user:pass"
+                    ]
+                },
+                pro_tips=[
+                    "AS-REP roasting = offline password cracking",
+                    "Kerberoasting = service account compromise",
+                    "Use 'show kerberos' to see all enumeration details"
+                ]
+            )
+        }
+    
+    def _display_header(self, config: DisplayConfig, finding: Any):
+        """Display universal header"""
+        print(f"\n=== {config.emoji} {config.service_name} Enumeration Results: {finding.target}:{finding.port} ===")
+    
+    def _display_basic_info(self, finding: Any, config: DisplayConfig):
+        """Display basic information section"""
+        basic_info_fields = {
+            'version': 'Version',
+            'server_version': 'Server Version', 
+            'software': 'Software',
+            'banner': 'Banner',
+            'hostname': 'Hostname',
+            'realm': 'Realm',
+            'server_info': 'Server Info'
+        }
+        
+        section = DisplaySection("BASIC INFORMATION", "📊", basic_info_fields)
+        section.display(finding, config)
+    
+    def _display_security_issues(self, finding: Any, config: DisplayConfig):
+        """Display security issues with severity classification"""
+        section = SecurityIssuesSection()
+        section.display(finding, config)
+    
+    def _display_custom_sections(self, finding: Any, config: DisplayConfig):
+        """Display service-specific sections"""
+        for section_key, section_def in config.section_definitions.items():
+            field_mappings = {field: field.replace('_', ' ').title() for field in section_def['fields']}
+            section = DisplaySection(section_def['title'], section_def['emoji'], field_mappings)
+            section.display(finding, config)
+    
+    def _display_attack_recommendations(self, finding: Any, config: DisplayConfig):
+        """Display attack recommendations"""
+        print(f"\n🎯 {config.service_name.upper()} ATTACK RECOMMENDATIONS:")
+        
+        suggestions = []
+        
+        # Add critical vulnerability suggestions
+        for check in config.attack_suggestion_config.get('critical_checks', []):
+            if hasattr(finding, check):
+                value = getattr(finding, check)
+                if value:
+                    if isinstance(value, list) and len(value) > 0:
+                        suggestions.append(f"🔥 CRITICAL: {check.replace('_', ' ').title()} detected!")
+                    elif isinstance(value, bool) and value:
+                        suggestions.append(f"🔥 CRITICAL: {check.replace('_', ' ').title()} enabled!")
+                    elif value and not isinstance(value, bool):
+                        suggestions.append(f"🔥 CRITICAL: {check.replace('_', ' ').title()}: {value}")
+        
+        # Add command templates
+        for template in config.attack_suggestion_config.get('command_templates', []):
+            target_ip = getattr(finding, 'target', 'TARGET_IP')
+            command = template.format(target=target_ip, user='USER', sid='SID')
+            suggestions.append(f"   Try: {command}")
+        
+        # Add general suggestions
+        suggestions.extend([
+            "🔍 Manual enumeration suggestions:",
+            "   • Test for weak/default credentials",
+            "   • Look for version-specific vulnerabilities",
+            "   • Check for service misconfigurations"
+        ])
+        
+        if suggestions:
+            for suggestion in suggestions:
+                print(f"   {suggestion}")
+    
+    def _display_pro_tips(self, config: DisplayConfig):
+        """Display Kevin's pro tips"""
+        print(f"\n💡 Kevin's {config.service_name} Pro Tips:")
+        for tip in config.pro_tips:
+            print(f"   • {tip}")
+    
+    def _fallback_display(self, service_type: str, finding: Any):
+        """Fallback display for unconfigured services"""
+        print(f"\n=== {service_type.upper()} Enumeration Results: {finding.target}:{finding.port} ===")
+        print("   Using fallback display - service not yet configured for universal display system")
+        
+        # Display basic attributes
+        for attr_name in dir(finding):
+            if not attr_name.startswith('_'):
+                value = getattr(finding, attr_name)
+                if value and not callable(value):
+                    print(f"   {attr_name}: {value}")
+
+# Create global instance
+universal_display = UniversalDisplayManager()
+
+# ===============================
+# END UNIVERSAL DISPLAY SYSTEM
 # ===============================
 
 @dataclass
@@ -3949,509 +4306,21 @@ Type 'help' to see available commands or 'kevin' for encouragement.
             print(f"Kevin: Manual MySQL enumeration failed - {e}")
     
     def _display_mysql_findings(self, finding: MySQLFinding):
-        """Display comprehensive MySQL enumeration results"""
-        print(f"\n=== 🗃️  MySQL Enumeration Results: {finding.target}:{finding.port} ===")
-        
-        # Basic Information
-        print("\n📊 BASIC INFORMATION:")
-        if finding.version:
-            print(f"   MySQL Version: {finding.version}")
-        if finding.server_version:
-            print(f"   Server Version: {finding.server_version}")
-        if finding.protocol_version:
-            print(f"   Protocol Version: {finding.protocol_version}")
-        if finding.ssl_enabled:
-            print(f"   SSL/TLS: ✅ Enabled")
-        else:
-            print(f"   SSL/TLS: ❌ Not detected")
-        
-        # Security Issues
-        if finding.security_issues:
-            print(f"\n🚨 SECURITY ISSUES ({len(finding.security_issues)}):")
-            for i, issue in enumerate(finding.security_issues, 1):
-                severity = "🔥 CRITICAL" if any(keyword in issue.lower() for keyword in ['critical', 'root', 'empty password']) else "⚠️  WARNING"
-                print(f"   {i}. {severity}: {issue}")
-        
-        # Empty Password Accounts
-        if finding.empty_password_accounts:
-            print(f"\n🔓 EMPTY PASSWORD ACCOUNTS ({len(finding.empty_password_accounts)}):")
-            for account in finding.empty_password_accounts:
-                print(f"   • {account} - IMMEDIATE SECURITY RISK!")
-        
-        # Database Information
-        if finding.databases:
-            print(f"\n📂 ACCESSIBLE DATABASES ({len(finding.databases)}):")
-            for db in finding.databases[:10]:  # Show first 10
-                print(f"   • {db}")
-            if len(finding.databases) > 10:
-                print(f"   ... and {len(finding.databases) - 10} more")
-        
-        # User Information
-        if finding.users:
-            print(f"\n👤 MYSQL USERS ({len(finding.users)}):")
-            for user in finding.users[:10]:  # Show first 10
-                print(f"   • {user}")
-            if len(finding.users) > 10:
-                print(f"   ... and {len(finding.users) - 10} more")
-        
-        # Important Variables
-        if finding.variables:
-            print(f"\n🔧 IMPORTANT VARIABLES:")
-            security_vars = ['local_infile', 'secure_file_priv', 'have_ssl', 'log_bin']
-            for var in security_vars:
-                if var in finding.variables:
-                    value = finding.variables[var]
-                    print(f"   {var}: {value}")
-        
-        # Attack Recommendations
-        self._suggest_mysql_attacks(finding)
+        """Display comprehensive MySQL enumeration results using universal display system"""
+        universal_display.display_findings('mysql', finding)
     
-    def _suggest_mysql_attacks(self, finding: MySQLFinding):
-        """Suggest attack vectors based on MySQL findings"""
-        print(f"\n🎯 MYSQL ATTACK RECOMMENDATIONS:")
-        
-        suggestions = []
-        
-        # Critical vulnerabilities
-        if finding.empty_password_accounts:
-            if 'root' in finding.empty_password_accounts:
-                suggestions.append("🔥 CRITICAL: Root has empty password - immediate access possible!")
-                suggestions.append(f"   Try: mysql -h {finding.target} -u root")
-            for account in finding.empty_password_accounts:
-                if account != 'root':
-                    suggestions.append(f"⚠️ Account '{account}' has empty password - test access")
-        
-        # Version-based attacks
-        if finding.version:
-            version_lower = finding.version.lower()
-            if any(old_ver in version_lower for old_ver in ['5.0', '5.1', '4.']):
-                suggestions.append("🎯 Very old MySQL version - research version-specific exploits")
-            elif '5.5' in version_lower:
-                suggestions.append("🔍 MySQL 5.5 detected - check for CVE-2012-2122 and other known issues")
-        
-        # Configuration-based attacks
-        if 'local_infile' in finding.variables and finding.variables['local_infile'].upper() == 'ON':
-            suggestions.append("📁 local_infile enabled - potential for LOAD DATA LOCAL INFILE attacks")
-        
-        if 'secure_file_priv' in finding.variables:
-            value = finding.variables['secure_file_priv']
-            if not value or value.upper() == 'NULL':
-                suggestions.append("📤 secure_file_priv unrestricted - potential for file read/write")
-        
-        # Database enumeration
-        if finding.databases:
-            interesting_dbs = [db for db in finding.databases 
-                             if any(keyword in db.lower() for keyword in ['user', 'admin', 'customer', 'payment', 'wordpress', 'drupal'])]
-            if interesting_dbs:
-                suggestions.append(f"📊 Interesting databases found: {', '.join(interesting_dbs[:3])}")
-        
-        # Access testing
-        if not finding.empty_password_accounts:
-            suggestions.append("🔐 No empty passwords found - try common credentials:")
-            suggestions.append("   • root:root, root:password, admin:admin, mysql:mysql")
-        
-        # Anonymous access
-        if finding.anonymous_access:
-            suggestions.append("👤 Anonymous access detected - test with mysql -h <target>")
-        
-        # Manual enumeration suggestions
-        suggestions.append("🔍 Manual enumeration suggestions:")
-        suggestions.append("   • Test for UDF (User Defined Function) injection")
-        suggestions.append("   • Check for privilege escalation via MySQL functions")
-        suggestions.append("   • Look for stored procedures and triggers")
-        
-        if suggestions:
-            for suggestion in suggestions:
-                print(f"   {suggestion}")
-        
-        print(f"\n💡 Kevin's MySQL Pro Tips:")
-        print("   • Empty passwords are gold mines - always test first")
-        print("   • Check mysql.user table if you get access")
-        print("   • Look for database names that suggest applications")
-        print("   • File read/write capabilities can lead to system access")
-        print("   • Use 'show mysql' to see all enumeration details")
     
     def _display_mssql_findings(self, finding: MSSQLFinding):
-        """Display comprehensive MSSQL enumeration results"""
-        print(f"\n=== 🏢 MSSQL Enumeration Results: {finding.target}:{finding.port} ===")
-        
-        # Basic Information
-        print("\n📊 BASIC INFORMATION:")
-        if finding.version:
-            print(f"   MSSQL Version: {finding.version}")
-        if finding.product_version:
-            print(f"   Product Version: {finding.product_version}")
-        if finding.build_number:
-            print(f"   Build Number: {finding.build_number}")
-        if finding.authentication_mode:
-            auth_display = "🔓 Mixed Mode (SQL + Windows)" if "mixed" in finding.authentication_mode.lower() else f"🔐 {finding.authentication_mode}"
-            print(f"   Authentication: {auth_display}")
-        
-        # Critical Flags
-        critical_alerts = []
-        if finding.xp_cmdshell_enabled:
-            critical_alerts.append("🔥 xp_cmdshell ENABLED - Command execution possible!")
-        if finding.sa_account_blank_password:
-            critical_alerts.append("🔥 SA account has BLANK password!")
-        
-        if critical_alerts:
-            print("\n🚨 CRITICAL SECURITY ALERTS:")
-            for alert in critical_alerts:
-                print(f"   {alert}")
-        
-        # Security Issues
-        if finding.security_issues:
-            print(f"\n🚨 SECURITY ISSUES ({len(finding.security_issues)}):")
-            for i, issue in enumerate(finding.security_issues, 1):
-                severity = "🔥 HIGH RISK" if any(keyword in issue.lower() for keyword in ['critical', 'high', 'cmdshell', 'blank']) else "⚠️  WARNING"
-                print(f"   {i}. {severity}: {issue}")
-        
-        # Weak Password Accounts
-        if finding.weak_passwords:
-            print(f"\n🔓 WEAK PASSWORD ACCOUNTS ({len(finding.weak_passwords)}):")
-            for account, password in finding.weak_passwords.items():
-                risk_level = "IMMEDIATE ACTION REQUIRED" if account.lower() == 'sa' else "Security Risk"
-                print(f"   • {account}:{password} - {risk_level}")
-        
-        # Database Information
-        if finding.databases:
-            print(f"\n📂 ACCESSIBLE DATABASES ({len(finding.databases)}):")
-            for db in finding.databases[:10]:  # Show first 10
-                interest = "🎯" if any(keyword in db.lower() for keyword in ['master', 'model', 'user', 'admin']) else "📄"
-                print(f"   {interest} {db}")
-            if len(finding.databases) > 10:
-                print(f"   ... and {len(finding.databases) - 10} more")
-        
-        # Dangerous Configurations
-        if finding.dangerous_configurations:
-            print(f"\n⚠️ DANGEROUS CONFIGURATIONS:")
-            for config in finding.dangerous_configurations:
-                print(f"   • {config}")
-        
-        # Service Information
-        if finding.service_account or finding.tcp_port or finding.named_pipe:
-            print(f"\n🔧 SERVICE INFORMATION:")
-            if finding.service_account:
-                print(f"   Service Account: {finding.service_account}")
-            if finding.tcp_port:
-                print(f"   TCP Port: {finding.tcp_port}")
-            if finding.named_pipe:
-                print(f"   Named Pipe: {finding.named_pipe}")
-        
-        # Attack Recommendations
-        self._suggest_mssql_attacks(finding)
-    
-    def _suggest_mssql_attacks(self, finding: MSSQLFinding):
-        """Suggest attack vectors based on MSSQL findings"""
-        print(f"\n🎯 MSSQL ATTACK RECOMMENDATIONS:")
-        
-        suggestions = []
-        
-        # Critical vulnerabilities
-        if finding.xp_cmdshell_enabled:
-            suggestions.append("🔥 CRITICAL: xp_cmdshell enabled - try command execution!")
-            suggestions.append(f"   Try: osql -S {finding.target} -E -Q \"xp_cmdshell 'whoami'\"")
-        
-        if finding.sa_account_blank_password:
-            suggestions.append("🔥 CRITICAL: SA account has blank password!")
-            suggestions.append(f"   Try: osql -S {finding.target} -U sa -P \"\" -Q \"SELECT @@VERSION\"")
-        
-        # Weak password exploitation
-        if finding.weak_passwords:
-            for account, password in finding.weak_passwords.items():
-                suggestions.append(f"🔓 Test access with {account}:{password}")
-                suggestions.append(f"   Try: osql -S {finding.target} -U {account} -P \"{password}\"")
-        
-        # Version-based attacks
-        if finding.version:
-            version_lower = finding.version.lower()
-            if any(old_ver in version_lower for old_ver in ['2000', '2005', '2008']):
-                suggestions.append("🎯 Older MSSQL version detected - research version-specific exploits")
-            if '2008' in version_lower:
-                suggestions.append("🔍 MSSQL 2008 detected - check for privilege escalation vulnerabilities")
-        
-        # Database enumeration
-        if finding.databases:
-            interesting_dbs = [db for db in finding.databases 
-                             if any(keyword in db.lower() for keyword in ['master', 'user', 'admin', 'customer', 'payment'])]
-            if interesting_dbs:
-                suggestions.append(f"📊 Target interesting databases: {', '.join(interesting_dbs[:3])}")
-        
-        # Authentication mode exploitation
-        if finding.authentication_mode and "mixed" in finding.authentication_mode.lower():
-            suggestions.append("🔐 Mixed authentication mode - try both SQL and Windows authentication")
-        
-        # General recommendations
-        if not finding.weak_passwords and not finding.sa_account_blank_password:
-            suggestions.append("🔐 No obvious weak credentials - try common passwords:")
-            suggestions.append("   • sa:sa, sa:password, admin:admin, sql:sql")
-        
-        # Manual enumeration suggestions
-        suggestions.append("🔍 Manual enumeration suggestions:")
-        suggestions.append("   • Check for SQL injection if web apps connect to this DB")
-        suggestions.append("   • Test for privilege escalation via SQL functions")
-        suggestions.append("   • Look for linked servers and impersonation")
-        
-        if suggestions:
-            for suggestion in suggestions:
-                print(f"   {suggestion}")
-        
-        print(f"\n💡 Kevin's MSSQL Pro Tips:")
-        print("   • xp_cmdshell is your golden ticket - always check first")
-        print("   • SA account access = game over")
-        print("   • Check master database for system information")
-        print("   • Look for stored procedures and custom functions")
-        print("   • Use 'show mssql' to see all enumeration details")
+        """Display comprehensive MSSQL enumeration results using universal display system"""
+        universal_display.display_findings('mssql', finding)
     
     def _display_oracle_findings(self, finding: OracleFinding):
-        """Display comprehensive Oracle enumeration results"""
-        print(f"\n=== 🔮 Oracle Enumeration Results: {finding.target}:{finding.port} ===")
-        
-        # TNS Listener Information
-        if finding.listener_version or finding.listener_status:
-            print("\n📊 TNS LISTENER INFORMATION:")
-            if finding.listener_version:
-                print(f"   Listener Version: {finding.listener_version}")
-            if finding.listener_status:
-                print(f"   Listener Status: {finding.listener_status}")
-        
-        # Service Identifiers (SIDs)
-        if finding.sids:
-            print(f"\n🎯 SERVICE IDENTIFIERS (SIDs) - {len(finding.sids)} discovered:")
-            for sid in finding.sids:
-                interest = "🔥" if sid.lower() in ['xe', 'orcl', 'prod', 'test', 'dev'] else "📄"
-                print(f"   {interest} {sid}")
-        
-        # Accessible SIDs
-        if finding.accessible_sids:
-            print(f"\n✅ ACCESSIBLE SIDs ({len(finding.accessible_sids)}):")
-            for sid in finding.accessible_sids:
-                print(f"   • {sid} - Connection verified!")
-        
-        # Version Information
-        if finding.version or finding.banner:
-            print(f"\n📊 VERSION INFORMATION:")
-            if finding.version:
-                print(f"   Oracle Version: {finding.version}")
-            if finding.banner:
-                print(f"   Banner: {finding.banner}")
-        
-        # Security Issues
-        if finding.security_issues:
-            print(f"\n🚨 SECURITY ISSUES ({len(finding.security_issues)}):")
-            for i, issue in enumerate(finding.security_issues, 1):
-                severity = "🔥 HIGH RISK" if any(keyword in issue.lower() for keyword in ['critical', 'high', 'default', 'weak']) else "⚠️  WARNING"
-                print(f"   {i}. {severity}: {issue}")
-        
-        # Default Accounts
-        if finding.default_accounts:
-            print(f"\n🔓 DEFAULT ACCOUNTS DETECTED:")
-            for account in finding.default_accounts:
-                risk_level = "IMMEDIATE ACTION REQUIRED" if account.lower() in ['sys', 'system', 'scott'] else "Security Risk"
-                print(f"   • {account} - {risk_level}")
-        
-        # Listener Configuration
-        if finding.listener_log_status or finding.listener_log_file:
-            print(f"\n📋 LISTENER CONFIGURATION:")
-            if finding.listener_log_status:
-                log_status = "✅ Enabled" if "on" in finding.listener_log_status.lower() else "❌ Disabled"
-                print(f"   Logging: {log_status}")
-            if finding.listener_log_file:
-                print(f"   Log File: {finding.listener_log_file}")
-        
-        # Attack Recommendations
-        self._suggest_oracle_attacks(finding)
-    
-    def _suggest_oracle_attacks(self, finding: OracleFinding):
-        """Suggest attack vectors based on Oracle findings"""
-        print(f"\n🎯 ORACLE ATTACK RECOMMENDATIONS:")
-        
-        suggestions = []
-        
-        # SID-based attacks
-        if finding.accessible_sids:
-            suggestions.append(f"🎯 PRIORITY: {len(finding.accessible_sids)} accessible SIDs found!")
-            for sid in finding.accessible_sids[:3]:  # Show top 3
-                suggestions.append(f"   Try connecting to SID: {sid}")
-                suggestions.append(f"   sqlplus system/manager@{finding.target}:1521/{sid}")
-        
-        # Default account exploitation
-        if finding.default_accounts:
-            suggestions.append("🔓 Default accounts detected - try common credentials:")
-            default_creds = [
-                "sys/password", "system/manager", "scott/tiger", 
-                "hr/hr", "dbsnmp/dbsnmp", "sysman/sysman"
-            ]
-            for cred in default_creds[:3]:
-                suggestions.append(f"   • {cred}")
-        
-        # SID discovery recommendations
-        if finding.sids:
-            high_value_sids = [sid for sid in finding.sids if sid.lower() in ['xe', 'orcl', 'prod', 'test']]
-            if high_value_sids:
-                suggestions.append(f"🔥 High-value SIDs discovered: {', '.join(high_value_sids)}")
-                suggestions.append("   These are commonly targeted - test immediately!")
-        
-        # Version-based attacks
-        if finding.version:
-            version_lower = finding.version.lower()
-            if any(old_ver in version_lower for old_ver in ['8i', '9i', '10g']):
-                suggestions.append("🎯 Older Oracle version detected - research version-specific exploits")
-            elif '11g' in version_lower:
-                suggestions.append("🔍 Oracle 11g detected - check for privilege escalation issues")
-        
-        # Listener security
-        if finding.listener_log_status and "off" in finding.listener_log_status.lower():
-            suggestions.append("📋 Listener logging disabled - potential for stealth attacks")
-        
-        # General attack strategies
-        if not finding.accessible_sids:
-            suggestions.append("🔐 No immediate SID access - try brute force approaches:")
-            suggestions.append("   • Use odat or oracle_login for credential testing")
-            suggestions.append("   • Test common SID names: XE, ORCL, PROD, TEST, DEV")
-        
-        # Manual enumeration suggestions
-        suggestions.append("🔍 Manual enumeration suggestions:")
-        suggestions.append("   • Use tnscmd10g for detailed listener enumeration")
-        suggestions.append("   • Check for TNS poisoning vulnerabilities")
-        suggestions.append("   • Test for privilege escalation via PL/SQL")
-        
-        if suggestions:
-            for suggestion in suggestions:
-                print(f"   {suggestion}")
-        
-        print(f"\n💡 Kevin's Oracle Pro Tips:")
-        print("   • SIDs are the keys to the kingdom - enumerate thoroughly")
-        print("   • Default credentials are still surprisingly common")
-        print("   • TNS Listener can reveal valuable system information")
-        print("   • Focus on accessible SIDs first")
-        print("   • Use 'show oracle' to see all enumeration details")
+        """Display comprehensive Oracle enumeration results using universal display system"""
+        universal_display.display_findings('oracle', finding)
     
     def _display_smtp_findings(self, finding: SMTPFinding):
-        """Display comprehensive SMTP enumeration results"""
-        print(f"\n=== 📧 SMTP Enumeration Results: {finding.target}:{finding.port} ===")
-        
-        # Basic Information
-        print("\n📊 BASIC INFORMATION:")
-        if finding.banner:
-            print(f"   Banner: {finding.banner}")
-        if finding.hostname:
-            print(f"   Hostname: {finding.hostname}")
-        if finding.software:
-            version_info = f" {finding.version}" if finding.version else ""
-            print(f"   Software: {finding.software}{version_info}")
-        
-        # Security Status
-        print(f"\n🔒 SECURITY STATUS:")
-        if finding.starttls_available:
-            print(f"   STARTTLS: ✅ Available")
-        else:
-            print(f"   STARTTLS: ❌ Not available")
-        
-        # Critical Security Issues
-        critical_issues = []
-        if finding.relay_test_result == "OPEN RELAY DETECTED":
-            critical_issues.append("🔥 CRITICAL: Open mail relay detected!")
-        
-        if critical_issues:
-            print("\n🚨 CRITICAL SECURITY ALERTS:")
-            for issue in critical_issues:
-                print(f"   {issue}")
-        
-        # Capabilities and Features
-        if finding.capabilities:
-            print(f"\n⚙️ SMTP CAPABILITIES ({len(finding.capabilities)}):")
-            for cap in finding.capabilities:
-                security_note = ""
-                if cap == 'VRFY':
-                    security_note = " ⚠️ USER ENUMERATION"
-                elif cap == 'EXPN':
-                    security_note = " ⚠️ LIST EXPANSION"
-                print(f"   • {cap}{security_note}")
-        
-        # Authentication Methods
-        if finding.auth_methods:
-            print(f"\n🔐 AUTHENTICATION METHODS:")
-            for method in finding.auth_methods:
-                print(f"   • {method}")
-        
-        # User Enumeration Results
-        if finding.valid_users:
-            print(f"\n👤 VALID USERS DISCOVERED ({len(finding.valid_users)}):")
-            for user in finding.valid_users:
-                print(f"   • {user}")
-        
-        # Configuration Details
-        if finding.max_message_size:
-            print(f"\n📋 CONFIGURATION:")
-            print(f"   Max Message Size: {finding.max_message_size} bytes")
-        
-        # Security Issues
-        if finding.security_issues:
-            print(f"\n🚨 SECURITY ISSUES ({len(finding.security_issues)}):")
-            for i, issue in enumerate(finding.security_issues, 1):
-                severity = "🔥 CRITICAL" if any(keyword in issue.lower() for keyword in ['critical', 'open relay']) else "⚠️  WARNING"
-                print(f"   {i}. {severity}: {issue}")
-        
-        # Attack Recommendations
-        self._suggest_smtp_attacks(finding)
-    
-    def _suggest_smtp_attacks(self, finding: SMTPFinding):
-        """Suggest attack vectors based on SMTP findings"""
-        print(f"\n🎯 SMTP ATTACK RECOMMENDATIONS:")
-        
-        suggestions = []
-        
-        # Critical vulnerabilities
-        if finding.relay_test_result == "OPEN RELAY DETECTED":
-            suggestions.append("🔥 CRITICAL: Open relay detected - can be abused for spam/phishing!")
-            suggestions.append("   Test: telnet <target> 25, then try MAIL FROM/RCPT TO with external addresses")
-        
-        # User enumeration
-        if finding.vrfy_enabled:
-            suggestions.append("🔍 VRFY command enabled - enumerate users:")
-            suggestions.append("   Try: smtp-user-enum -M VRFY -U /usr/share/seclists/Usernames/top-usernames-shortlist.txt -t <target>")
-        
-        if finding.expn_enabled:
-            suggestions.append("🔍 EXPN command enabled - enumerate mailing lists:")
-            suggestions.append("   Try: smtp-user-enum -M EXPN -U common-lists.txt -t <target>")
-        
-        # Valid users found
-        if finding.valid_users:
-            suggestions.append(f"👤 {len(finding.valid_users)} valid users discovered:")
-            for user in finding.valid_users[:3]:
-                suggestions.append(f"   • {user} - try password attacks or social engineering")
-        
-        # Software-specific attacks
-        if finding.software and finding.version:
-            if 'postfix' in finding.software.lower():
-                suggestions.append("📧 Postfix detected - check for version-specific vulnerabilities")
-            elif 'sendmail' in finding.software.lower():
-                suggestions.append("📧 Sendmail detected - historically vulnerable, research exploits")
-            elif 'exchange' in finding.software.lower():
-                suggestions.append("📧 Microsoft Exchange detected - check for recent CVEs")
-        
-        # Encryption issues
-        if not finding.starttls_available:
-            suggestions.append("🔓 No STARTTLS - communications in plaintext")
-            suggestions.append("   Consider: credential sniffing, man-in-the-middle attacks")
-        
-        # General recommendations
-        suggestions.append("🔍 Manual enumeration suggestions:")
-        suggestions.append("   • Test for email harvesting via RCPT TO")
-        suggestions.append("   • Check for internal hostname disclosure")
-        suggestions.append("   • Test authentication bypass techniques")
-        
-        if suggestions:
-            for suggestion in suggestions:
-                print(f"   {suggestion}")
-        
-        print(f"\n💡 Kevin's SMTP Pro Tips:")
-        print("   • Open relays are immediate critical findings")
-        print("   • User enumeration leads to targeted attacks")
-        print("   • Email addresses discovered can be used for phishing")
-        print("   • SMTP banners often leak internal information")
-        print("   • Use 'show smtp' to see all enumeration details")
+        """Display comprehensive SMTP enumeration results using universal display system"""
+        universal_display.display_findings('smtp', finding)
     
     def _display_email_service_findings(self, finding: EmailServiceFinding):
         """Display comprehensive email service enumeration results"""
@@ -4584,274 +4453,13 @@ Type 'help' to see available commands or 'kevin' for encouragement.
                 print(f"   {suggestion}")
     
     def _display_ldap_findings(self, finding: LDAPFinding):
-        """Display comprehensive LDAP enumeration results"""
-        print(f"\n=== 🏢 LDAP Enumeration Results: {finding.target}:{finding.port} ===")
-        
-        # Basic Information
-        print("\n📊 BASIC INFORMATION:")
-        if finding.server_info:
-            print(f"   Server Info: {finding.server_info}")
-        if finding.base_dn:
-            print(f"   Base DN: {finding.base_dn}")
-        if finding.supported_sasl_mechanisms:
-            print(f"   SASL Mechanisms: {', '.join(finding.supported_sasl_mechanisms)}")
-        
-        # Naming Contexts
-        if finding.naming_contexts:
-            print(f"\n📂 NAMING CONTEXTS ({len(finding.naming_contexts)}):")
-            for context in finding.naming_contexts:
-                print(f"   • {context}")
-        
-        # Directory Structure
-        if finding.organizational_units:
-            print(f"\n🏗️ ORGANIZATIONAL UNITS ({len(finding.organizational_units)}):")
-            for ou in finding.organizational_units[:10]:  # Show first 10
-                print(f"   • {ou}")
-            if len(finding.organizational_units) > 10:
-                print(f"   ... and {len(finding.organizational_units) - 10} more")
-        
-        # Schema Information
-        if finding.schema_information:
-            print(f"\n📋 SCHEMA INFORMATION:")
-            for key, value in finding.schema_information.items():
-                if isinstance(value, list):
-                    print(f"   {key}: {len(value)} entries")
-                else:
-                    print(f"   {key}: {value}")
-        
-        # Users and Groups
-        if finding.users_found:
-            print(f"\n👥 USERS FOUND ({len(finding.users_found)}):")
-            for user in finding.users_found[:10]:  # Show first 10
-                print(f"   • {user}")
-            if len(finding.users_found) > 10:
-                print(f"   ... and {len(finding.users_found) - 10} more")
-        
-        if finding.groups_found:
-            print(f"\n👤 GROUPS FOUND ({len(finding.groups_found)}):")
-            for group in finding.groups_found[:10]:  # Show first 10
-                print(f"   • {group}")
-            if len(finding.groups_found) > 10:
-                print(f"   ... and {len(finding.groups_found) - 10} more")
-        
-        # Computer Accounts
-        if finding.computer_accounts:
-            print(f"\n💻 COMPUTER ACCOUNTS ({len(finding.computer_accounts)}):")
-            for computer in finding.computer_accounts[:10]:  # Show first 10
-                print(f"   • {computer}")
-            if len(finding.computer_accounts) > 10:
-                print(f"   ... and {len(finding.computer_accounts) - 10} more")
-        
-        # Critical Security Issues
-        critical_issues = []
-        if finding.anonymous_bind:
-            critical_issues.append("🔥 CRITICAL: Anonymous bind enabled!")
-        if finding.weak_configurations:
-            critical_issues.extend([f"⚠️ {config}" for config in finding.weak_configurations])
-        
-        if critical_issues:
-            print("\n🚨 CRITICAL SECURITY ALERTS:")
-            for issue in critical_issues:
-                print(f"   {issue}")
-        
-        # Security Issues
-        if finding.security_issues:
-            print(f"\n🚨 SECURITY ISSUES ({len(finding.security_issues)}):")
-            for i, issue in enumerate(finding.security_issues, 1):
-                severity = "🔥 CRITICAL" if any(keyword in issue.lower() for keyword in ['critical', 'anonymous']) else "⚠️  WARNING"
-                print(f"   {i}. {severity}: {issue}")
-        
-        # Attack Recommendations
-        self._suggest_ldap_attacks(finding)
+        """Display comprehensive LDAP enumeration results using universal display system"""
+        universal_display.display_findings('ldap', finding)
     
     def _display_kerberos_findings(self, finding: KerberosFinding):
-        """Display comprehensive Kerberos enumeration results"""
-        print(f"\n=== 🎫 Kerberos Enumeration Results: {finding.target}:{finding.port} ===")
-        
-        # Basic Information
-        print("\n📊 BASIC INFORMATION:")
-        if finding.realm:
-            print(f"   Kerberos Realm: {finding.realm}")
-        if finding.kdc_server:
-            print(f"   KDC Server: {finding.kdc_server}")
-        if finding.supported_encryption_types:
-            print(f"   Encryption Types: {', '.join(finding.supported_encryption_types)}")
-        
-        # Service Principal Names
-        if finding.spns_found:
-            print(f"\n🎯 SERVICE PRINCIPAL NAMES ({len(finding.spns_found)}):")
-            for spn in finding.spns_found[:10]:  # Show first 10
-                print(f"   • {spn}")
-            if len(finding.spns_found) > 10:
-                print(f"   ... and {len(finding.spns_found) - 10} more")
-        
-        # Users
-        if finding.users_found:
-            print(f"\n👥 USERS FOUND ({len(finding.users_found)}):")
-            for user in finding.users_found[:10]:  # Show first 10
-                print(f"   • {user}")
-            if len(finding.users_found) > 10:
-                print(f"   ... and {len(finding.users_found) - 10} more")
-        
-        # Service Accounts
-        if finding.service_accounts:
-            print(f"\n🔧 SERVICE ACCOUNTS ({len(finding.service_accounts)}):")
-            for account in finding.service_accounts[:10]:  # Show first 10
-                print(f"   • {account}")
-            if len(finding.service_accounts) > 10:
-                print(f"   ... and {len(finding.service_accounts) - 10} more")
-        
-        # Critical Security Issues
-        critical_issues = []
-        if finding.asrep_roastable_users:
-            critical_issues.append(f"🔥 CRITICAL: {len(finding.asrep_roastable_users)} users vulnerable to AS-REP roasting!")
-        if finding.kerberoastable_users:
-            critical_issues.append(f"🔥 CRITICAL: {len(finding.kerberoastable_users)} users vulnerable to Kerberoasting!")
-        if finding.weak_encryption_detected:
-            critical_issues.append("⚠️ Weak encryption algorithms detected")
-        
-        if critical_issues:
-            print("\n🚨 CRITICAL SECURITY ALERTS:")
-            for issue in critical_issues:
-                print(f"   {issue}")
-        
-        # AS-REP Roastable Users
-        if finding.asrep_roastable_users:
-            print(f"\n🔥 AS-REP ROASTABLE USERS ({len(finding.asrep_roastable_users)}):")
-            for user in finding.asrep_roastable_users[:5]:  # Show first 5
-                print(f"   • {user} (Pre-authentication disabled)")
-            if len(finding.asrep_roastable_users) > 5:
-                print(f"   ... and {len(finding.asrep_roastable_users) - 5} more")
-        
-        # Kerberoastable Users
-        if finding.kerberoastable_users:
-            print(f"\n🎯 KERBEROASTABLE USERS ({len(finding.kerberoastable_users)}):")
-            for user in finding.kerberoastable_users[:5]:  # Show first 5
-                print(f"   • {user}")
-            if len(finding.kerberoastable_users) > 5:
-                print(f"   ... and {len(finding.kerberoastable_users) - 5} more")
-        
-        # Domain Controllers
-        if finding.domain_controllers:
-            print(f"\n🏢 DOMAIN CONTROLLERS ({len(finding.domain_controllers)}):")
-            for dc in finding.domain_controllers:
-                print(f"   • {dc}")
-        
-        # Security Issues
-        if finding.security_issues:
-            print(f"\n🚨 SECURITY ISSUES ({len(finding.security_issues)}):")
-            for i, issue in enumerate(finding.security_issues, 1):
-                severity = "🔥 CRITICAL" if any(keyword in issue.lower() for keyword in ['critical', 'roast']) else "⚠️  WARNING"
-                print(f"   {i}. {severity}: {issue}")
-        
-        # Attack Recommendations
-        self._suggest_kerberos_attacks(finding)
+        """Display comprehensive Kerberos enumeration results using universal display system"""
+        universal_display.display_findings('kerberos', finding)
     
-    def _suggest_ldap_attacks(self, finding: LDAPFinding):
-        """Suggest attack vectors based on LDAP findings"""
-        print(f"\n🎯 LDAP ATTACK RECOMMENDATIONS:")
-        
-        suggestions = []
-        
-        # Critical vulnerabilities
-        if finding.anonymous_bind:
-            suggestions.append("🔥 CRITICAL: Anonymous bind enabled!")
-            suggestions.append("   Risk: Full directory enumeration without authentication")
-            suggestions.append("   Action: Enumerate all objects, users, groups, and configuration")
-        
-        # User enumeration
-        if finding.users_found:
-            suggestions.append("👥 User enumeration successful:")
-            suggestions.append("   • Build username list for password spraying")
-            suggestions.append("   • Look for service accounts with elevated privileges")
-            suggestions.append("   • Check for accounts with non-expiring passwords")
-        
-        # Group enumeration
-        if finding.groups_found:
-            suggestions.append("👤 Group enumeration successful:")
-            suggestions.append("   • Identify high-privilege groups (Domain Admins, etc.)")
-            suggestions.append("   • Map group memberships for privilege escalation paths")
-        
-        # Computer accounts
-        if finding.computer_accounts:
-            suggestions.append("💻 Computer accounts discovered:")
-            suggestions.append("   • Identify domain controllers and critical servers")
-            suggestions.append("   • Look for stale computer accounts")
-        
-        # Schema information
-        if finding.schema_information:
-            suggestions.append("📋 Schema information accessible:")
-            suggestions.append("   • Look for custom attributes with sensitive data")
-            suggestions.append("   • Identify extended rights and permissions")
-        
-        # General recommendations
-        suggestions.append("🔍 Manual enumeration suggestions:")
-        suggestions.append("   • Search for passwords in description fields")
-        suggestions.append("   • Look for backup/legacy accounts")
-        suggestions.append("   • Check for LDAP injection vulnerabilities")
-        suggestions.append("   • Enumerate trust relationships")
-        
-        if suggestions:
-            for suggestion in suggestions:
-                print(f"   {suggestion}")
-    
-    def _suggest_kerberos_attacks(self, finding: KerberosFinding):
-        """Suggest attack vectors based on Kerberos findings"""
-        print(f"\n🎯 KERBEROS ATTACK RECOMMENDATIONS:")
-        
-        suggestions = []
-        
-        # AS-REP Roasting
-        if finding.asrep_roastable_users:
-            suggestions.append("🔥 CRITICAL: AS-REP Roasting possible!")
-            suggestions.append(f"   {len(finding.asrep_roastable_users)} users have pre-authentication disabled")
-            suggestions.append("   Action: Use GetNPUsers.py or Rubeus to harvest AS-REP hashes")
-            suggestions.append("   Next: Crack hashes offline with hashcat")
-        
-        # Kerberoasting
-        if finding.kerberoastable_users:
-            suggestions.append("🎯 Kerberoasting opportunities available!")
-            suggestions.append(f"   {len(finding.kerberoastable_users)} users have SPNs set")
-            suggestions.append("   Action: Use GetUserSPNs.py or Rubeus to request service tickets")
-            suggestions.append("   Next: Crack TGS-REP hashes offline")
-        
-        # SPN enumeration
-        if finding.spns_found:
-            suggestions.append("🎯 Service Principal Names discovered:")
-            suggestions.append("   • Map services to understand network architecture")
-            suggestions.append("   • Identify high-value services (SQL, Exchange, etc.)")
-            suggestions.append("   • Look for custom applications with weak SPNs")
-        
-        # User enumeration
-        if finding.users_found:
-            suggestions.append("👥 User enumeration successful:")
-            suggestions.append("   • Build username list for password spraying")
-            suggestions.append("   • Check for users with Kerberos pre-authentication disabled")
-            suggestions.append("   • Look for service accounts in user list")
-        
-        # Weak encryption
-        if finding.weak_encryption_detected:
-            suggestions.append("⚠️ Weak encryption algorithms detected:")
-            suggestions.append("   • DES/RC4 encryption vulnerable to brute force")
-            suggestions.append("   • Consider downgrade attacks if possible")
-        
-        # Domain controller enumeration
-        if finding.domain_controllers:
-            suggestions.append("🏢 Domain controllers identified:")
-            suggestions.append("   • Target for Golden/Silver ticket attacks")
-            suggestions.append("   • Check for DCSync permissions")
-            suggestions.append("   • Look for replication opportunities")
-        
-        # General recommendations
-        suggestions.append("🔍 Manual enumeration suggestions:")
-        suggestions.append("   • Test for Kerberos delegation issues")
-        suggestions.append("   • Look for accounts with constrained delegation")
-        suggestions.append("   • Check for password spraying opportunities")
-        suggestions.append("   • Enumerate cross-domain trusts")
-        
-        if suggestions:
-            for suggestion in suggestions:
-                print(f"   {suggestion}")
     
     def _manual_mssql_enumeration(self, ports: str):
         """Manual MSSQL enumeration triggered by enum command"""
