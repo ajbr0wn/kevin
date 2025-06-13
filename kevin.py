@@ -19,8 +19,227 @@ import re
 import urllib.parse
 from datetime import datetime
 from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 from pathlib import Path
+from abc import ABC, abstractmethod
+
+# ===============================
+# REFACTORED FRAMEWORK CLASSES
+# ===============================
+
+@dataclass
+class CommandResult:
+    """Standardized command execution result"""
+    success: bool
+    output: str
+    error: str
+    command: str
+    timeout: bool = False
+
+class CommandExecutor:
+    """Centralized command execution with consistent error handling"""
+    
+    @staticmethod
+    def run_command(cmd: List[str], timeout: int = 60) -> CommandResult:
+        """Standardized command execution with error handling"""
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return CommandResult(
+                success=result.returncode == 0,
+                output=result.stdout,
+                error=result.stderr,
+                command=' '.join(cmd)
+            )
+        except subprocess.TimeoutExpired:
+            return CommandResult(False, "", f"Timeout after {timeout}s", ' '.join(cmd), timeout=True)
+        except Exception as e:
+            return CommandResult(False, "", str(e), ' '.join(cmd))
+    
+    @staticmethod
+    def run_nmap_scripts(scripts: List[str], target: str, port: int, timeout: int = 300) -> CommandResult:
+        """Run multiple nmap scripts efficiently"""
+        if not scripts:
+            return CommandResult(False, "", "No scripts provided", "")
+        
+        combined_scripts = ','.join(scripts)
+        cmd = ['nmap', '--script', combined_scripts, '-p', str(port), target]
+        return CommandExecutor.run_command(cmd, timeout)
+    
+    @staticmethod
+    def parse_version_info(output: str, patterns: Dict[str, str]) -> Dict[str, str]:
+        """Common version parsing logic"""
+        versions = {}
+        for field, pattern in patterns.items():
+            match = re.search(pattern, output, re.IGNORECASE | re.MULTILINE)
+            if match:
+                versions[field] = match.group(1).strip()
+        return versions
+
+class CommonResources:
+    """Shared resources across all enumerators"""
+    
+    COMMON_PASSWORDS = {
+        'database': ['', 'password', 'admin', 'root', '123456', 'sa', 'mysql'],
+        'email': ['password', 'admin', 'welcome', '123456', 'mail'],
+        'web': ['admin', 'password', 'test', 'guest', 'demo'],
+        'ldap': ['', 'password', 'admin', 'ldap', 'directory'],
+        'kerberos': ['password', 'admin', 'krbtgt', 'service']
+    }
+    
+    DEFAULT_ACCOUNTS = {
+        'mysql': ['root', 'mysql', 'admin', 'user'],
+        'mssql': ['sa', 'MSSQL$', 'SQLEXPRESS', 'administrator'],
+        'oracle': ['SYS', 'SYSTEM', 'SCOTT', 'HR', 'DBSNMP'],
+        'smtp': ['admin', 'mail', 'postmaster', 'root'],
+        'ldap': ['admin', 'administrator', 'cn=admin', 'root'],
+        'kerberos': ['krbtgt', 'administrator', 'admin']
+    }
+    
+    NMAP_SCRIPT_CATEGORIES = {
+        'basic_info': ['*-info', '*-version', '*-banner'],
+        'security': ['*-vuln-*', '*-empty-password', '*-brute'],
+        'enumeration': ['*-enum*', '*-users', '*-databases', '*-shares']
+    }
+
+@dataclass
+class ServiceConfig:
+    """Configuration for each service enumerator"""
+    service_name: str
+    default_port: int
+    nmap_scripts: List[str]
+    version_patterns: Dict[str, str]
+    security_indicators: List[str]
+    common_vulns: List[str]
+
+class BaseServiceEnumerator(ABC):
+    """Base class for all service enumerators with common functionality"""
+    
+    def __init__(self, config: ServiceConfig):
+        self.config = config
+        self.service_name = config.service_name
+        self.default_port = config.default_port
+        self.scripts = config.nmap_scripts
+        self.version_patterns = config.version_patterns
+        self.security_indicators = config.security_indicators
+        
+    def enumerate(self, target: str, port: int = None):
+        """Template method for enumeration flow"""
+        port = port or self.default_port
+        print(f"[*] {self.service_name} enumeration on {target}:{port}")
+        
+        finding = self._create_finding(target, port)
+        
+        try:
+            # Standard 4-phase enumeration pattern
+            self._phase_1_basic_info(target, port, finding)
+            self._phase_2_security_config(target, port, finding)
+            self._phase_3_detailed_enum(target, port, finding)
+            self._phase_4_security_assessment(finding)
+            
+        except Exception as e:
+            self._handle_enumeration_error(e, finding)
+        
+        return finding
+    
+    @abstractmethod
+    def _create_finding(self, target: str, port: int):
+        """Create service-specific finding object"""
+        pass
+    
+    def _phase_1_basic_info(self, target: str, port: int, finding):
+        """Phase 1: Basic information gathering (can be overridden)"""
+        result = CommandExecutor.run_nmap_scripts(
+            [s for s in self.scripts if 'info' in s or 'version' in s],
+            target, port
+        )
+        if result.success:
+            self._parse_basic_info(result.output, finding)
+    
+    def _phase_2_security_config(self, target: str, port: int, finding):
+        """Phase 2: Security configuration analysis (can be overridden)"""
+        result = CommandExecutor.run_nmap_scripts(
+            [s for s in self.scripts if 'vuln' in s or 'security' in s],
+            target, port
+        )
+        if result.success:
+            self._parse_security_config(result.output, finding)
+    
+    @abstractmethod
+    def _phase_3_detailed_enum(self, target: str, port: int, finding):
+        """Phase 3: Detailed enumeration (must be implemented by subclasses)"""
+        pass
+    
+    def _phase_4_security_assessment(self, finding):
+        """Phase 4: Security assessment and issue compilation"""
+        issues = []
+        
+        # Common security assessments
+        issues.extend(self._check_common_vulnerabilities(finding))
+        issues.extend(self._check_weak_configurations(finding))
+        
+        # Service-specific assessments
+        issues.extend(self._check_service_specific_issues(finding))
+        
+        finding.security_issues = issues
+    
+    def _parse_basic_info(self, output: str, finding):
+        """Parse basic information from nmap output"""
+        version_info = CommandExecutor.parse_version_info(output, self.version_patterns)
+        for field, value in version_info.items():
+            if hasattr(finding, field):
+                setattr(finding, field, value)
+    
+    def _parse_security_config(self, output: str, finding):
+        """Parse security configuration from nmap output"""
+        # Common security parsing logic
+        for indicator in self.security_indicators:
+            if indicator.lower() in output.lower():
+                if hasattr(finding, 'security_issues') and finding.security_issues:
+                    finding.security_issues.append(f"Security indicator detected: {indicator}")
+    
+    def _check_common_vulnerabilities(self, finding) -> List[str]:
+        """Check for common vulnerabilities across all services"""
+        issues = []
+        
+        # Check for version-based vulnerabilities
+        if hasattr(finding, 'version') and finding.version:
+            for vuln in self.config.common_vulns:
+                if vuln.lower() in finding.version.lower():
+                    issues.append(f"Potentially vulnerable version detected: {vuln}")
+        
+        return issues
+    
+    def _check_weak_configurations(self, finding) -> List[str]:
+        """Check for weak configurations"""
+        issues = []
+        
+        # Check for empty passwords
+        if hasattr(finding, 'empty_password_accounts') and finding.empty_password_accounts:
+            issues.append(f"Empty password accounts detected: {', '.join(finding.empty_password_accounts)}")
+        
+        # Check for default accounts
+        if hasattr(finding, 'default_accounts') and finding.default_accounts:
+            issues.append(f"Default accounts detected: {', '.join(finding.default_accounts)}")
+        
+        return issues
+    
+    @abstractmethod
+    def _check_service_specific_issues(self, finding) -> List[str]:
+        """Check for service-specific security issues"""
+        pass
+    
+    def _handle_enumeration_error(self, error: Exception, finding):
+        """Handle enumeration errors gracefully"""
+        error_msg = f"Enumeration error in {self.service_name}: {str(error)}"
+        if hasattr(finding, 'security_issues'):
+            if finding.security_issues is None:
+                finding.security_issues = []
+            finding.security_issues.append(error_msg)
+        print(f"Kevin: {error_msg}")
+
+# ===============================
+# END FRAMEWORK CLASSES  
+# ===============================
 
 @dataclass
 class Port:
@@ -1688,81 +1907,100 @@ class VirtualHostDiscovery:
         except:
             return False
 
-class MySQLEnumerator:
-    """Comprehensive MySQL enumeration using nmap scripts and manual techniques"""
+class MySQLEnumerator(BaseServiceEnumerator):
+    """Comprehensive MySQL enumeration using refactored base framework"""
     
     def __init__(self):
-        # MySQL-specific nmap scripts for enumeration
-        self.mysql_scripts = [
-            'mysql-info',              # Basic version and server information
-            'mysql-audit',             # Security audit (configuration issues)
-            'mysql-databases',         # List accessible databases
-            'mysql-dump-hashes',       # Enumerate user hashes (if accessible)
-            'mysql-empty-password',    # Test for accounts with empty passwords
-            'mysql-enum',              # General enumeration
-            'mysql-users',             # Enumerate MySQL users
-            'mysql-variables',         # Show MySQL variables
-            'mysql-vuln-cve2012-2122', # Check for specific CVEs
-        ]
+        config = ServiceConfig(
+            service_name="MySQL",
+            default_port=3306,
+            nmap_scripts=[
+                'mysql-info', 'mysql-audit', 'mysql-databases', 'mysql-dump-hashes',
+                'mysql-empty-password', 'mysql-enum', 'mysql-users', 'mysql-variables',
+                'mysql-vuln-cve2012-2122'
+            ],
+            version_patterns={
+                'version': r'Version: ([^\n]+)',
+                'server_version': r'Server version: ([^\n]+)',
+                'protocol_version': r'Protocol version: ([^\n]+)'
+            },
+            security_indicators=[
+                'empty password', 'anonymous access', 'root account accessible',
+                'file privileges', 'weak ssl', 'default credentials'
+            ],
+            common_vulns=['CVE-2012-2122', 'CVE-2016-6662', 'CVE-2017-3599']
+        )
+        super().__init__(config)
         
-        # Common MySQL default configurations to check
-        self.security_checks = [
-            'anonymous_access',
-            'empty_passwords', 
-            'default_credentials',
-            'information_schema_access',
-            'mysql_db_access',
-            'file_privileges',
-            'ssl_configuration'
-        ]
-        
-        # Important MySQL variables to analyze
-        self.important_variables = [
-            'version',
-            'datadir',
-            'secure_file_priv',
-            'local_infile',
-            'have_ssl',
-            'ssl_cipher',
-            'log_bin',
-            'general_log',
-            'general_log_file'
-        ]
+        # MySQL-specific attributes  
+        self.common_passwords = CommonResources.COMMON_PASSWORDS['database']
+        self.default_accounts = CommonResources.DEFAULT_ACCOUNTS['mysql']
+    
+    def _create_finding(self, target: str, port: int) -> MySQLFinding:
+        """Create MySQL finding object"""
+        return MySQLFinding(target=target, port=port, timestamp=datetime.now().isoformat())
     
     def enumerate_mysql(self, target: str, port: int = 3306) -> MySQLFinding:
-        """Comprehensive MySQL enumeration"""
-        print(f"[*] MySQL enumeration on {target}:{port}")
-        
-        finding = MySQLFinding(
-            target=target,
-            port=port,
-            timestamp=datetime.now().isoformat()
-        )
-        
-        # Phase 1: Basic information gathering
-        self._get_basic_info(target, port, finding)
-        
-        # Phase 2: Security configuration analysis
-        self._analyze_security_config(target, port, finding)
-        
-        # Phase 3: Database and user enumeration (if accessible)
-        self._enumerate_databases_users(target, port, finding)
-        
-        # Phase 4: Security assessment
-        self._assess_security_issues(finding)
-        
-        return finding
+        """Comprehensive MySQL enumeration using base framework"""
+        return self.enumerate(target, port)
     
-    def _get_basic_info(self, target: str, port: int, finding: MySQLFinding):
-        """Get basic MySQL server information"""
-        print(f"[*] Phase 1: Basic MySQL information gathering...")
+    def _phase_3_detailed_enum(self, target: str, port: int, finding: MySQLFinding):
+        """Phase 3: MySQL-specific detailed enumeration"""
+        print(f"[*] Phase 3: MySQL database and user enumeration...")
         
-        # Run mysql-info script
-        try:
-            result = subprocess.run([
-                'nmap', '--script', 'mysql-info', 
-                '-p', str(port), target
-            ], capture_output=True, text=True, timeout=60)
+        # Run MySQL-specific enumeration scripts
+        mysql_enum_scripts = ['mysql-databases', 'mysql-users', 'mysql-variables']
+        result = CommandExecutor.run_nmap_scripts(mysql_enum_scripts, target, port)
+        
+        if result.success:
+            # Parse databases
+            databases = re.findall(r'Database: ([^\n\r]+)', result.output)
+            finding.databases = databases
+            
+            accessible_dbs = re.findall(r'Accessible: ([^\n\r]+)', result.output)
+            finding.accessible_databases = accessible_dbs
+            
+            # Parse users
+            users = re.findall(r'User: ([^\n\r]+)', result.output)
+            finding.users = users
+            
+            # Parse variables
+            variables = {}
+            for var in ['version', 'datadir', 'secure_file_priv', 'local_infile', 'have_ssl']:
+                pattern = rf'{var}\s*=\s*([^\n\r]+)'
+                match = re.search(pattern, result.output, re.IGNORECASE)
+                if match:
+                    variables[var] = match.group(1).strip()
+            finding.variables = variables
+            
+            print(f"[+] Found {len(databases)} databases, {len(users)} users")
+    
+    def _check_service_specific_issues(self, finding: MySQLFinding) -> List[str]:
+        """Check MySQL-specific security issues"""
+        issues = []
+        
+        # Check for dangerous local_infile setting
+        if finding.variables and finding.variables.get('local_infile', '').lower() == 'on':
+            issues.append("CRITICAL: Local file loading enabled - file system access possible")
+        
+        # Check for access to sensitive databases
+        if finding.accessible_databases:
+            sensitive_dbs = ['mysql', 'information_schema', 'performance_schema']
+            accessible_sensitive = [db for db in finding.accessible_databases if db.lower() in sensitive_dbs]
+            if accessible_sensitive:
+                issues.append(f"Access to sensitive databases: {', '.join(accessible_sensitive)}")
+        
+        # Check SSL configuration
+        if finding.variables and finding.variables.get('have_ssl', '').lower() in ['no', 'off']:
+            issues.append("SSL/TLS encryption not available")
+        
+        return issues
+
+# Original MySQL methods replaced with refactored framework
+# Removed ~250 lines of duplicate subprocess/parsing code
+# Now using BaseServiceEnumerator with standardized patterns
+
+class MSSQLEnumerator:
             
             if result.returncode == 0:
                 output = result.stdout
